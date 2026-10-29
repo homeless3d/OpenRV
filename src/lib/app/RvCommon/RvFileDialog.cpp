@@ -179,7 +179,10 @@ namespace Rv
         m_ui.autoRefreshCheckbox->setCheckState((m_allowAutoRefresh) ? Qt::Checked : Qt::Unchecked);
 
         setWindowTitle("Select Files/Directories");
-        setSizeGripEnabled(true);
+        // The size grip is a 17x17 child in the bottom-right corner, painted opaque by the style sheet's QWidget background rule.
+        // The layout's right/bottom margins are only 8 px, so it covers a 9x9 corner of the Open/Save button (and catches clicks
+        // there). On Wayland the window decoration / compositor already provides the resize edges, so do not create it there.
+        setSizeGripEnabled(!QGuiApplication::platformName().startsWith(QLatin1String("wayland")));
         m_reloadTimer = new QTimer(this);
         m_sidePanelTimer = new QTimer(this);
         m_columnViewTimer = new QTimer(this);
