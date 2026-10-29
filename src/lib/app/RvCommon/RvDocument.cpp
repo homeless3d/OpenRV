@@ -2489,7 +2489,10 @@ namespace Rv
             if (QMenu* m = a->menu())
             {
                 disconnectActions(m->actions());
-                m->disconnect();
+                //  Only this document's connections (aboutToShow): a wildcard
+                //  disconnect() also cuts whatever else watches the menu's
+                //  destroyed() signal, and Qt 6 warns about each such menu.
+                m->disconnect(this);
             }
             else
                 a->disconnect();
