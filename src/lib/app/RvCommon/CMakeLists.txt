@@ -78,9 +78,11 @@ IF(RV_TARGET_DARWIN)
   LIST(APPEND _sources ${_filename})
 ENDIF()
 
-IF(RV_TARGET_LINUX
-   OR RV_TARGET_WINDOWS
-)
+IF(RV_TARGET_LINUX)
+  # Linux: keep the original OpenRV look (gradient toolbars, black separators, compact menu bar). rv_linux_dark.qss is the newer flat theme.
+  QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark_legacy.qss" CPP_SYMBOL "rv_linux_dark")
+  LIST(APPEND _sources ${_filename})
+ELSEIF(RV_TARGET_WINDOWS)
   QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark.qss" CPP_SYMBOL "rv_linux_dark")
   LIST(APPEND _sources ${_filename})
 ENDIF()

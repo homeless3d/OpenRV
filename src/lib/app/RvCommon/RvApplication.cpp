@@ -751,6 +751,19 @@ namespace Rv
 
         Rv::Options& opts = Rv::Options::sharedOptions();
 
+        //
+        //  Qt6 sizes the window in show(), when the (still empty) menubar has a
+        //  size hint of 0, so the window comes out one menubar too short and
+        //  the viewport loses that height. The menus exist now: grow the window
+        //  to its real size hint unless the user asked for a geometry.
+        //
+        if (opts.width == -1 && opts.height == -1 && !doc->isFullScreen() && !doc->isMaximized())
+        {
+            const int missing = doc->sizeHint().height() - doc->height();
+            if (missing > 0)
+                doc->resize(doc->width(), doc->height() + missing);
+        }
+
         DB("xl " << opts.xl);
         doc->setAggressiveSizing(opts.xl);
         if (opts.nomb && doc->menuBarShown())
