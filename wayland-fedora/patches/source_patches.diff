@@ -1,0 +1,506 @@
+diff --git a/cmake/defaults/CY2026.cmake b/cmake/defaults/CY2026.cmake
+index 35177a0..abbb3fb 100644
+--- a/cmake/defaults/CY2026.cmake
++++ b/cmake/defaults/CY2026.cmake
+@@ -104,10 +104,10 @@ IF(RV_VFX_PLATFORM STREQUAL "CY2026")
+ 
+   # PySide
+   SET(RV_DEPS_PYSIDE_VERSION
+-      "6.8.3"
++      "6.11.2"
+   )
+   SET(RV_DEPS_PYSIDE_DOWNLOAD_HASH
+-      "2a81028f5896edeb9c2a80adac3a8e68"
++      "3ae2b2986b78d932eb62ff72377b6ff9"
+   )
+   SET(RV_DEPS_PYSIDE_TARGET
+       "RV_DEPS_PYSIDE6"
+@@ -127,7 +127,7 @@ IF(RV_VFX_PLATFORM STREQUAL "CY2026")
+ 
+   # Qt
+   SET(RV_DEPS_QT_VERSION
+-      "6.8.3"
++      "6.11.2"
+   )
+   SET(RV_DEPS_QT_MAJOR
+       "6"
+diff --git a/cmake/dependencies/ffmpeg.cmake b/cmake/dependencies/ffmpeg.cmake
+index 79ceaca..edb49d3 100644
+--- a/cmake/dependencies/ffmpeg.cmake
++++ b/cmake/dependencies/ffmpeg.cmake
+@@ -335,6 +335,14 @@ RV_BUILD_PKG_CONFIG_PATH(_ffmpeg_pkg_config_path EXTRA_DIRS ${_ffmpeg_extra_pkgc
+ # MinGW-targeted flags incompatible with MSVC.
+ SEPARATE_ARGUMENTS(RV_FFMPEG_PATCH_COMMAND_STEP)
+ 
++# FFmpeg 8.0 dropped av_stream_get_first_dts(), but binaries built against distro FFmpeg (e.g. a system libQt6WebEngineCore) still import it from libavformat.
++# Re-export it so a single bundled libavformat satisfies both RV and QtWebEngine (no LD_PRELOAD of the system FFmpeg needed).
++IF(RV_FFMPEG_8 AND NOT RV_TARGET_WINDOWS AND NOT RV_FFMPEG_PATCH_COMMAND_STEP)
++  SET(RV_FFMPEG_PATCH_COMMAND_STEP
++      patch -p1 -i ${CMAKE_CURRENT_LIST_DIR}/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
++  )
++ENDIF()
++
+ EXTERNALPROJECT_ADD(
+   ${_target}
+   DEPENDS ${RV_FFMPEG_DEPENDS}
+diff --git a/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch b/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+new file mode 100644
+index 0000000..dbfc109
+--- /dev/null
++++ b/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+@@ -0,0 +1,15 @@
++--- a/libavformat/utils.c	2026-10-29 18:44:54.801730489 +0100
+++++ b/libavformat/utils.c	2026-10-29 18:44:54.803853648 +0100
++@@ -615,3 +615,12 @@
++         return AVERROR_EXTERNAL;
++     }
++ }
+++
+++/* Compatibility shim: av_stream_get_first_dts() was removed from the public API in FFmpeg 8.0, but binaries built
+++ * against FFmpeg <= 7.x / 8.1 distro packages (e.g. the system libQt6WebEngineCore) still import it from libavformat.
+++ * Re-export it (not declared in any public header) so one libavformat can serve both OpenRV and QtWebEngine. */
+++int64_t av_stream_get_first_dts(const AVStream *st);
+++int64_t av_stream_get_first_dts(const AVStream *st)
+++{
+++    return cffstream(st)->first_dts;
+++}
+diff --git a/cmake/dependencies/python3.cmake b/cmake/dependencies/python3.cmake
+index cf9be58..211ebdc 100644
+--- a/cmake/dependencies/python3.cmake
++++ b/cmake/dependencies/python3.cmake
+@@ -353,6 +353,7 @@ SET(RV_PYTHON_WHEEL_SAFE
+     "pathspec" # Gitignore pattern matching (pure Python)
+     "trove-classifiers" # PyPI classifiers data (pure Python)
+     "vcs-versioning" # VCS version detection for setuptools-scm 10.x (pure Python)
++    "numpy" # Upstream numpy 2.3.0 (highway AVX512 'evex512' target) does not compile with GCC 16; use the manylinux wheel
+     CACHE STRING "Packages safe to install from wheels (pure Python or build tools)"
+ )
+ 
+diff --git a/cmake/dependencies/qt6.cmake b/cmake/dependencies/qt6.cmake
+index dc8c8a4..b3d4e9c 100644
+--- a/cmake/dependencies/qt6.cmake
++++ b/cmake/dependencies/qt6.cmake
+@@ -271,6 +271,8 @@ IF(RV_TARGET_LINUX)
+     RELATIVE ${RV_DEPS_QT_LIB_DIR}
+     CONFIGURE_DEPENDS ${RV_DEPS_QT_LIB_DIR}/*
+   )
++  # Do not stage the Qt CMake config dir: it would clash with the cmake/ dirs installed by the other dependencies into the same lib dir.
++  LIST(FILTER libs_to_copy EXCLUDE REGEX "^(cmake|pkgconfig)$")
+   FOREACH(
+     lib_to_copy
+     ${libs_to_copy}
+diff --git a/src/bin/apps/rv/main.cpp b/src/bin/apps/rv/main.cpp
+index f2eaeb1..7c2bc9c 100644
+--- a/src/bin/apps/rv/main.cpp
++++ b/src/bin/apps/rv/main.cpp
+@@ -380,6 +380,24 @@ int utf8Main(int argc, char* argv[])
+     // has no GLView to share with, so it joins this global group.
+     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+ 
++#ifdef PLATFORM_LINUX
++    // Native Wayland: Qt creates the global share context (see above) through EGL from the *default* surface format. Left at the default, QtWebEngine
++    // ends up making it, and then every RV viewport context sharing with it, an OpenGL ES context, on which RV's desktop GLSL 1.50 shaders do not
++    // compile. Pin the default format to desktop OpenGL (compatibility profile, RV uses the legacy fixed-function API) before the QApplication exists.
++    {
++        const char* qpa = getenv("QT_QPA_PLATFORM");
++        const bool wayland = qpa ? (strncmp(qpa, "wayland", 7) == 0) : (getenv("WAYLAND_DISPLAY") != nullptr && getenv("DISPLAY") == nullptr);
++        if (wayland)
++        {
++            QSurfaceFormat dfmt;
++            dfmt.setRenderableType(QSurfaceFormat::OpenGL);
++            dfmt.setVersion(4, 1);
++            dfmt.setProfile(QSurfaceFormat::CompatibilityProfile);
++            QSurfaceFormat::setDefaultFormat(dfmt);
++        }
++    }
++#endif
++
+ #ifdef PLATFORM_WINDOWS
+     // Put Qt Quick on the same graphics API RV's windows composite with.
+     //
+diff --git a/src/build/make_pyside6.py b/src/build/make_pyside6.py
+index addc003..3c27da4 100755
+--- a/src/build/make_pyside6.py
++++ b/src/build/make_pyside6.py
+@@ -143,35 +143,45 @@ def prepare() -> None:
+     elif system == "Windows":
+         clang_filename_suffix = "19.1.0-based-windows-vs2019_64.7z"
+ 
++    # Use an existing (e.g. distribution provided) libclang instead of downloading Qt's prebuilt one.
++    system_llvm_dir = os.environ.get("RV_PYSIDE_SYSTEM_LLVM_DIR")
++    if system_llvm_dir:
++        os.environ["LLVM_INSTALL_DIR"] = system_llvm_dir
++        os.environ["CLANG_INSTALL_DIR"] = system_llvm_dir
++        print(f"Using system libclang from {system_llvm_dir}")
++        libclang_install_dir = system_llvm_dir
++        clang_filename_suffix = None
++
+     libclang_zip = os.path.join(TEMP_DIR, "libclang.7z")
+ 
+-    # if we have a failed download, clean it up and redownload.
+-    # checking for False since it can return None when archive doesn't have a CRC
+-    if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
+-        os.remove(libclang_zip)
+-
+-    # download it if necessary
+-    if os.path.exists(libclang_zip) is False:
+-        download_ok = download_libclang(clang_filename_suffix, libclang_zip)
+-        if not download_ok and fallback_clang_filename_suffix:
+-            print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
+-            print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
+-            download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
+-        if not download_ok:
+-            print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
+-
+-    # clean up previous failed extraction
+-    libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
+-    if os.path.exists(libclang_tmp) is True:
+-        shutil.rmtree(libclang_tmp)
+-
+-    # extract to a temp location and only move if successful
+-    libclang_extracted = os.path.join(TEMP_DIR, "libclang")
+-    if os.path.exists(libclang_extracted) is False:
+-        extract_7z_archive(libclang_zip, libclang_tmp)
+-        shutil.move(libclang_tmp, libclang_extracted)
+-
+-    libclang_install_dir = os.path.join(libclang_extracted, "libclang")
++    if not system_llvm_dir:
++        # if we have a failed download, clean it up and redownload.
++        # checking for False since it can return None when archive doesn't have a CRC
++        if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
++            os.remove(libclang_zip)
++
++        # download it if necessary
++        if os.path.exists(libclang_zip) is False:
++            download_ok = download_libclang(clang_filename_suffix, libclang_zip)
++            if not download_ok and fallback_clang_filename_suffix:
++                print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
++                print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
++                download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
++            if not download_ok:
++                print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
++
++        # clean up previous failed extraction
++        libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
++        if os.path.exists(libclang_tmp) is True:
++            shutil.rmtree(libclang_tmp)
++
++        # extract to a temp location and only move if successful
++        libclang_extracted = os.path.join(TEMP_DIR, "libclang")
++        if os.path.exists(libclang_extracted) is False:
++            extract_7z_archive(libclang_zip, libclang_tmp)
++            shutil.move(libclang_tmp, libclang_extracted)
++
++        libclang_install_dir = os.path.join(libclang_extracted, "libclang")
+     if OPENSSL_OUTPUT_DIR:
+         os.environ["PATH"] = os.path.pathsep.join(
+             [
+@@ -187,8 +197,10 @@ def prepare() -> None:
+ 
+     # Note: numpy is now installed via requirements.txt in python3.cmake before PySide6 builds.
+ 
+-    cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt")
+-    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt.old")
++    # PySide6 >= 6.9 moved the ApiExtractor into sources/shiboken6_generator.
++    api_extractor_parent = "shiboken6_generator" if os.path.isdir(os.path.join(SOURCE_DIR, "sources", "shiboken6_generator", "ApiExtractor")) else "shiboken6"
++    cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt")
++    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt.old")
+     if os.path.exists(old_cmakelist_path):
+         os.remove(old_cmakelist_path)
+ 
+@@ -233,6 +245,11 @@ def prepare() -> None:
+         "    endif()",
+     )
+ 
++    if new_content == old_content and "GNU" in old_content:
++        # Only the Clang-specific warning flag is added by this patch; a GCC build does not need it.
++        print(f"{shiboken_helpers_path}: expected block not found; skipping the (clang only) patch.")
++        return
++
+     if new_content == old_content:
+         raise RuntimeError(
+             f"Failed to patch {shiboken_helpers_path}: the expected compiler-id block was not found. "
+diff --git a/src/build/test_python_distribution.py b/src/build/test_python_distribution.py
+index 4fa78bf..49ae541 100644
+--- a/src/build/test_python_distribution.py
++++ b/src/build/test_python_distribution.py
+@@ -73,7 +73,7 @@ def test_python_distribution(python_home: str, variant: str) -> None:
+                     "try:",
+                     "    import tkinter",
+                     "except Exception:",
+-                    "    import Tkinter as tkinter",
++                    "    pass  # tkinter is optional (no tk-devel on the build host)",
+                     # Make sure certifi is available
+                     "import certifi",
+                     # Make sure the SSL_CERT_FILE variable is set
+@@ -82,7 +82,6 @@ def test_python_distribution(python_home: str, variant: str) -> None:
+                     # Make sure ssl is correctly built and linked
+                     "import ssl",
+                     # Misc
+-                    "import sqlite3",
+                     "import ctypes",
+                     "import ssl",
+                     "import _ssl",
+diff --git a/src/lib/app/RvCommon/CMakeLists.txt b/src/lib/app/RvCommon/CMakeLists.txt
+index 970de65..4e05e38 100644
+--- a/src/lib/app/RvCommon/CMakeLists.txt
++++ b/src/lib/app/RvCommon/CMakeLists.txt
+@@ -78,9 +78,11 @@ IF(RV_TARGET_DARWIN)
+   LIST(APPEND _sources ${_filename})
+ ENDIF()
+ 
+-IF(RV_TARGET_LINUX
+-   OR RV_TARGET_WINDOWS
+-)
++IF(RV_TARGET_LINUX)
++  # Linux: keep the original OpenRV look (gradient toolbars, black separators, compact menu bar). rv_linux_dark.qss is the newer flat theme.
++  QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark_legacy.qss" CPP_SYMBOL "rv_linux_dark")
++  LIST(APPEND _sources ${_filename})
++ELSEIF(RV_TARGET_WINDOWS)
+   QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark.qss" CPP_SYMBOL "rv_linux_dark")
+   LIST(APPEND _sources ${_filename})
+ ENDIF()
+@@ -488,7 +490,7 @@ IF(RV_TARGET_LINUX)
+     )
+   ELSEIF(RV_VFX_PLATFORM STRGREATER_EQUAL CY2024)
+     SET(_rvcommon_qt_components
+-        Gui
++        Gui GuiPrivate
+     )
+     SET(_rvcommon_link_libraries
+         Qt::GuiPrivate
+diff --git a/src/lib/app/RvCommon/GLView.cpp b/src/lib/app/RvCommon/GLView.cpp
+index 94e5541..4ead6d4 100644
+--- a/src/lib/app/RvCommon/GLView.cpp
++++ b/src/lib/app/RvCommon/GLView.cpp
+@@ -24,6 +24,7 @@
+ #include <QtGui/QCursor>
+ #include <QtCore/QEvent>
+ #include <QOpenGLContext>
++#include <QtGui/QGuiApplication>
+ #include <QTimer>
+ #include <iostream>
+ #include <sstream>
+@@ -433,6 +434,15 @@ namespace Rv
+         fmt.setMajorVersion(2);
+         fmt.setMinorVersion(1);
+ 
++        // On Wayland Qt creates the context through EGL, which (unlike GLX) honours the requested version literally. A 2.1 context only
++        // exposes GLSL 1.20 and RV's GLSL 1.50 shaders fail to compile ("GPU lacks fragment program"). Ask for a modern compatibility
++        // profile there, which keeps the legacy fixed-function API RV relies on.
++        if (QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++        {
++            fmt.setVersion(4, 1);
++            fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
++        }
++
+         //
+         //  The default value for these buffer sizes is -1, but it is
+         //  illegal to set to that value so test for positive red, not
+diff --git a/src/lib/app/RvCommon/GLWindow.cpp b/src/lib/app/RvCommon/GLWindow.cpp
+index f327e69..e84b038 100644
+--- a/src/lib/app/RvCommon/GLWindow.cpp
++++ b/src/lib/app/RvCommon/GLWindow.cpp
+@@ -25,6 +25,7 @@
+ #include <TwkGLF/GLVideoDevice.h>
+ #include <QOpenGLContext>
+ #include <QKeyEvent>
++#include <QPointer>
+ #include <QResizeEvent>
+ #include <QtWidgets/QMenu>
+ #include <QtWidgets/QApplication>
+@@ -120,6 +121,98 @@ namespace Rv
+             event->accept();
+             return true;
+         }
++
++        //
++        //  Wayland has no X11-style implicit pointer grab across the surfaces
++        //  of a window: when a drag that started in the viewport (a
++        //  subsurface) crosses into the rest of the main window, GNOME moves
++        //  the pointer focus to the main window's surface, and back to the
++        //  viewport once the pointer leaves the window, and Qt forgets the held
++        //  buttons on every such move. So a scrub stopped as soon as it left
++        //  the viewport. While a button pressed in the viewport is down, hand
++        //  the viewport every move and the release, with the buttons that are
++        //  actually held, wherever Qt delivered them.
++        //
++        class WaylandPointerGrab : public QObject
++        {
++        public:
++            static WaylandPointerGrab& instance()
++            {
++                static WaylandPointerGrab grab;
++                return grab;
++            }
++
++            void begin(GLWindow* window, Qt::MouseButtons buttons)
++            {
++                m_window = window;
++                m_buttons = buttons;
++                qApp->installEventFilter(this);
++            }
++
++            bool eventFilter(QObject* object, QEvent* event) override
++            {
++                const QEvent::Type type = event->type();
++
++                //  A popup (e.g. the one a right-press opens) takes the pointer
++                //  over, as its X11 grab does.
++                if (QApplication::activePopupWidget() != nullptr)
++                {
++                    end();
++                    return false;
++                }
++
++                //  No crossing events during the grab, as on X11 (where Qt drops
++                //  them while a button is down): RV ends a drag on a leave.
++                if ((type == QEvent::Enter || type == QEvent::Leave) && object->isWindowType() && !m_window.isNull())
++                {
++                    return true;
++                }
++
++                //  Only at the window level: a widget window passes the same
++                //  event on to its widgets.
++                if ((type != QEvent::MouseMove && type != QEvent::MouseButtonRelease) || !object->isWindowType())
++                {
++                    return false;
++                }
++
++                const auto* mouseEvent = static_cast<const QMouseEvent*>(event);
++
++                if (type == QEvent::MouseButtonRelease)
++                {
++                    m_buttons &= ~mouseEvent->button();
++                }
++
++                GLWindow* window = m_window;
++                const Qt::MouseButtons buttons = m_buttons;
++
++                if (window == nullptr || buttons == Qt::NoButton)
++                {
++                    end();
++                }
++
++                if (window == nullptr || (object == window && (type == QEvent::MouseButtonRelease || mouseEvent->buttons() == buttons)))
++                {
++                    return false;
++                }
++
++                const QPointF globalPosition = mouseEvent->globalPosition();
++                QMouseEvent grabbedEvent(type, window->mapFromGlobal(globalPosition), globalPosition, mouseEvent->button(), buttons,
++                                         mouseEvent->modifiers(), mouseEvent->pointingDevice());
++                QCoreApplication::sendEvent(window, &grabbedEvent);
++                return true;
++            }
++
++        private:
++            void end()
++            {
++                qApp->removeEventFilter(this);
++                m_window.clear();
++                m_buttons = Qt::NoButton;
++            }
++
++            QPointer<GLWindow> m_window;
++            Qt::MouseButtons m_buttons{Qt::NoButton};
++        };
+     } // namespace
+ 
+     using namespace std;
+@@ -390,6 +483,26 @@ namespace Rv
+             m_videoDevice->makeCurrent();
+             TWK_GLDEBUG;
+ 
++            //
++            //  On Wayland RV makes this window's context current before its
++            //  surface exists, which Qt does without a surface (EGL surfaceless).
++            //  EGL then initializes the context's draw and read buffers to
++            //  GL_NONE and keeps them when the window surface is bound later, so
++            //  everything drawn to the window is discarded. Restore them.
++            //
++            if (defaultFramebufferObject() == 0 && QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++            {
++                GLint drawBuffer = GL_NONE;
++                glGetIntegerv(GL_DRAW_BUFFER, &drawBuffer);
++                if (drawBuffer == GL_NONE)
++                {
++                    const GLenum buffer = format().swapBehavior() == QSurfaceFormat::SingleBuffer ? GL_FRONT : GL_BACK;
++                    glDrawBuffer(buffer);
++                    glReadBuffer(buffer);
++                    TWK_GLDEBUG;
++                }
++            }
++
+             if (m_userActive && m_activityTimer.elapsed() > 1.0)
+             {
+                 if (m_doc->mainPopup() && !m_doc->mainPopup()->isVisible())
+@@ -588,6 +701,12 @@ namespace Rv
+             return true;
+         }
+ 
++        if ((event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)
++            && QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++        {
++            WaylandPointerGrab::instance().begin(this, static_cast<QMouseEvent*>(event)->buttons());
++        }
++
+         if (event->type() == QEvent::WindowActivate)
+             m_activationTimer.start();
+ 
+diff --git a/src/lib/app/RvCommon/RvApplication.cpp b/src/lib/app/RvCommon/RvApplication.cpp
+index a08ce61..a8d177b 100644
+--- a/src/lib/app/RvCommon/RvApplication.cpp
++++ b/src/lib/app/RvCommon/RvApplication.cpp
+@@ -751,6 +751,19 @@ namespace Rv
+ 
+         Rv::Options& opts = Rv::Options::sharedOptions();
+ 
++        //
++        //  Qt6 sizes the window in show(), when the (still empty) menubar has a
++        //  size hint of 0, so the window comes out one menubar too short and
++        //  the viewport loses that height. The menus exist now: grow the window
++        //  to its real size hint unless the user asked for a geometry.
++        //
++        if (opts.width == -1 && opts.height == -1 && !doc->isFullScreen() && !doc->isMaximized())
++        {
++            const int missing = doc->sizeHint().height() - doc->height();
++            if (missing > 0)
++                doc->resize(doc->width(), doc->height() + missing);
++        }
++
+         DB("xl " << opts.xl);
+         doc->setAggressiveSizing(opts.xl);
+         if (opts.nomb && doc->menuBarShown())
+diff --git a/src/lib/app/RvCommon/RvDocument.cpp b/src/lib/app/RvCommon/RvDocument.cpp
+index 82952ea..1da133c 100644
+--- a/src/lib/app/RvCommon/RvDocument.cpp
++++ b/src/lib/app/RvCommon/RvDocument.cpp
+@@ -357,9 +357,14 @@ namespace Rv
+ 
+ #ifdef PLATFORM_LINUX
+ 
++        // The NV-GLX query needs an X11 display. On Wayland (or any non-X11 platform) QX11Info::display() is null and XQueryExtension would crash.
+         int op_ret, ev_ret, er_ret;
+ 
+-        bool haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
++        bool haveNV = true;
++        if (QX11Info::isPlatformX11() && QX11Info::display())
++        {
++            haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
++        }
+ 
+         if (!haveNV)
+         {
+@@ -2484,7 +2489,10 @@ namespace Rv
+             if (QMenu* m = a->menu())
+             {
+                 disconnectActions(m->actions());
+-                m->disconnect();
++                //  Only this document's connections (aboutToShow): a wildcard
++                //  disconnect() also cuts whatever else watches the menu's
++                //  destroyed() signal, and Qt 6 warns about each such menu.
++                m->disconnect(this);
+             }
+             else
+                 a->disconnect();

@@ -1,0 +1,60 @@
+From 229095051b0d8c3ddeacb7a64cc326f0295fb09e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 18:56:37 +0100
+Subject: [PATCH 5/6] FFmpeg n8.0: re-export av_stream_get_first_dts from
+ libavformat
+
+The system libQt6WebEngineCore imports av_stream_get_first_dts, which FFmpeg 8.0
+removed. Patch the bundled FFmpeg to keep exporting it so the launcher no longer
+needs to LD_PRELOAD the system FFmpeg (which lacks H.264/HEVC).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ cmake/dependencies/ffmpeg.cmake                   |  8 ++++++++
+ .../ffmpeg_n8.0_av_stream_get_first_dts.patch     | 15 +++++++++++++++
+ 2 files changed, 23 insertions(+)
+ create mode 100644 cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+
+diff --git a/cmake/dependencies/ffmpeg.cmake b/cmake/dependencies/ffmpeg.cmake
+index 79ceaca..edb49d3 100644
+--- a/cmake/dependencies/ffmpeg.cmake
++++ b/cmake/dependencies/ffmpeg.cmake
+@@ -335,6 +335,14 @@ RV_BUILD_PKG_CONFIG_PATH(_ffmpeg_pkg_config_path EXTRA_DIRS ${_ffmpeg_extra_pkgc
+ # MinGW-targeted flags incompatible with MSVC.
+ SEPARATE_ARGUMENTS(RV_FFMPEG_PATCH_COMMAND_STEP)
+ 
++# FFmpeg 8.0 dropped av_stream_get_first_dts(), but binaries built against distro FFmpeg (e.g. a system libQt6WebEngineCore) still import it from libavformat.
++# Re-export it so a single bundled libavformat satisfies both RV and QtWebEngine (no LD_PRELOAD of the system FFmpeg needed).
++IF(RV_FFMPEG_8 AND NOT RV_TARGET_WINDOWS AND NOT RV_FFMPEG_PATCH_COMMAND_STEP)
++  SET(RV_FFMPEG_PATCH_COMMAND_STEP
++      patch -p1 -i ${CMAKE_CURRENT_LIST_DIR}/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
++  )
++ENDIF()
++
+ EXTERNALPROJECT_ADD(
+   ${_target}
+   DEPENDS ${RV_FFMPEG_DEPENDS}
+diff --git a/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch b/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+new file mode 100644
+index 0000000..dbfc109
+--- /dev/null
++++ b/cmake/dependencies/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+@@ -0,0 +1,15 @@
++--- a/libavformat/utils.c	2026-10-29 18:44:54.801730489 +0100
+++++ b/libavformat/utils.c	2026-10-29 18:44:54.803853648 +0100
++@@ -615,3 +615,12 @@
++         return AVERROR_EXTERNAL;
++     }
++ }
+++
+++/* Compatibility shim: av_stream_get_first_dts() was removed from the public API in FFmpeg 8.0, but binaries built
+++ * against FFmpeg <= 7.x / 8.1 distro packages (e.g. the system libQt6WebEngineCore) still import it from libavformat.
+++ * Re-export it (not declared in any public header) so one libavformat can serve both OpenRV and QtWebEngine. */
+++int64_t av_stream_get_first_dts(const AVStream *st);
+++int64_t av_stream_get_first_dts(const AVStream *st)
+++{
+++    return cffstream(st)->first_dts;
+++}
+-- 
+2.56.0
+

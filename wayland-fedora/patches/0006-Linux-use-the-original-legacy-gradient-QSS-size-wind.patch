@@ -1,0 +1,61 @@
+From ac12806129cb066f1d7ef97c04b011eac835cd36 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 19:09:04 +0100
+Subject: [PATCH 6/6] Linux: use the original (legacy) gradient QSS; size
+ window incl. menubar on Qt6
+
+- RvCommon/CMakeLists.txt: on Linux compile rv_linux_dark_legacy.qss as rv_linux_dark (original gradient toolbars/black separators); Windows keeps the flat theme.
+- RvApplication.cpp: Qt6 sizes the window in show() while the menubar is empty (sizeHint 0), so the window lost one menubar height; grow to sizeHint after the menus exist (no user geometry).
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/lib/app/RvCommon/CMakeLists.txt    |  8 +++++---
+ src/lib/app/RvCommon/RvApplication.cpp | 13 +++++++++++++
+ 2 files changed, 18 insertions(+), 3 deletions(-)
+
+diff --git a/src/lib/app/RvCommon/CMakeLists.txt b/src/lib/app/RvCommon/CMakeLists.txt
+index c6628d1..4e05e38 100644
+--- a/src/lib/app/RvCommon/CMakeLists.txt
++++ b/src/lib/app/RvCommon/CMakeLists.txt
+@@ -78,9 +78,11 @@ IF(RV_TARGET_DARWIN)
+   LIST(APPEND _sources ${_filename})
+ ENDIF()
+ 
+-IF(RV_TARGET_LINUX
+-   OR RV_TARGET_WINDOWS
+-)
++IF(RV_TARGET_LINUX)
++  # Linux: keep the original OpenRV look (gradient toolbars, black separators, compact menu bar). rv_linux_dark.qss is the newer flat theme.
++  QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark_legacy.qss" CPP_SYMBOL "rv_linux_dark")
++  LIST(APPEND _sources ${_filename})
++ELSEIF(RV_TARGET_WINDOWS)
+   QUOTE_FILE(_filename INPUT_FILENAME "rv_linux_dark.qss" CPP_SYMBOL "rv_linux_dark")
+   LIST(APPEND _sources ${_filename})
+ ENDIF()
+diff --git a/src/lib/app/RvCommon/RvApplication.cpp b/src/lib/app/RvCommon/RvApplication.cpp
+index a08ce61..a8d177b 100644
+--- a/src/lib/app/RvCommon/RvApplication.cpp
++++ b/src/lib/app/RvCommon/RvApplication.cpp
+@@ -751,6 +751,19 @@ namespace Rv
+ 
+         Rv::Options& opts = Rv::Options::sharedOptions();
+ 
++        //
++        //  Qt6 sizes the window in show(), when the (still empty) menubar has a
++        //  size hint of 0, so the window comes out one menubar too short and
++        //  the viewport loses that height. The menus exist now: grow the window
++        //  to its real size hint unless the user asked for a geometry.
++        //
++        if (opts.width == -1 && opts.height == -1 && !doc->isFullScreen() && !doc->isMaximized())
++        {
++            const int missing = doc->sizeHint().height() - doc->height();
++            if (missing > 0)
++                doc->resize(doc->width(), doc->height() + missing);
++        }
++
+         DB("xl " << opts.xl);
+         doc->setAggressiveSizing(opts.xl);
+         if (opts.nomb && doc->menuBarShown())
+-- 
+2.56.0
+

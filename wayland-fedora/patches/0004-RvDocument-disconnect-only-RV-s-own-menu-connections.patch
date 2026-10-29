@@ -1,0 +1,38 @@
+From d675d6f5fbb19781ae7bb563917b32682240be53 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 18:39:33 +0100
+Subject: [PATCH 4/6] RvDocument: disconnect only RV's own menu connections
+ when purging menus
+
+purgeMenus() called QMenu::disconnect() with no arguments on every menu.
+That wildcard disconnect also removes whatever else is connected to the
+menu (including its destroyed() signal), and Qt 6 warns for each such
+menu: "QObject::disconnect: wildcard call disconnects from destroyed
+signal of QMenu::unnamed" -- 222 lines on every menu rebuild (mode
+toggles) and on close. The only connections RvDocument makes on these
+menus are aboutToShow() -> this, so disconnect just those.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/lib/app/RvCommon/RvDocument.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib/app/RvCommon/RvDocument.cpp b/src/lib/app/RvCommon/RvDocument.cpp
+index 183e803..1da133c 100644
+--- a/src/lib/app/RvCommon/RvDocument.cpp
++++ b/src/lib/app/RvCommon/RvDocument.cpp
+@@ -2489,7 +2489,10 @@ namespace Rv
+             if (QMenu* m = a->menu())
+             {
+                 disconnectActions(m->actions());
+-                m->disconnect();
++                //  Only this document's connections (aboutToShow): a wildcard
++                //  disconnect() also cuts whatever else watches the menu's
++                //  destroyed() signal, and Qt 6 warns about each such menu.
++                m->disconnect(this);
+             }
+             else
+                 a->disconnect();
+-- 
+2.56.0
+

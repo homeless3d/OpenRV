@@ -1,0 +1,56 @@
+From 972e5591117b4bab622ead3619e0e3f44ba25657 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 17:50:28 +0100
+Subject: [PATCH 2/6] GLWindow: restore GL_BACK draw/read buffer on Wayland so
+ the viewport draws
+
+On Wayland RV makes the viewport window's context current before the
+window surface exists (QTGLVideoDevice::makeCurrent during startup), which
+Qt's EGL backend does surfacelessly. Per EGL_KHR_surfaceless_context the
+context's draw and read buffers are then initialized to GL_NONE and stay
+that way when the window surface is bound later, so every paintGL() was
+discarded and the viewport stayed black (grey with an ARGB surface).
+
+In paintGL(), on Wayland and the default framebuffer only, reset a GL_NONE
+draw/read buffer to GL_BACK (GL_FRONT for single-buffered formats).
+X11 is untouched.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/lib/app/RvCommon/GLWindow.cpp | 20 ++++++++++++++++++++
+ 1 file changed, 20 insertions(+)
+
+diff --git a/src/lib/app/RvCommon/GLWindow.cpp b/src/lib/app/RvCommon/GLWindow.cpp
+index f327e69..74ddc86 100644
+--- a/src/lib/app/RvCommon/GLWindow.cpp
++++ b/src/lib/app/RvCommon/GLWindow.cpp
+@@ -390,6 +390,26 @@ namespace Rv
+             m_videoDevice->makeCurrent();
+             TWK_GLDEBUG;
+ 
++            //
++            //  On Wayland RV makes this window's context current before its
++            //  surface exists, which Qt does without a surface (EGL surfaceless).
++            //  EGL then initializes the context's draw and read buffers to
++            //  GL_NONE and keeps them when the window surface is bound later, so
++            //  everything drawn to the window is discarded. Restore them.
++            //
++            if (defaultFramebufferObject() == 0 && QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++            {
++                GLint drawBuffer = GL_NONE;
++                glGetIntegerv(GL_DRAW_BUFFER, &drawBuffer);
++                if (drawBuffer == GL_NONE)
++                {
++                    const GLenum buffer = format().swapBehavior() == QSurfaceFormat::SingleBuffer ? GL_FRONT : GL_BACK;
++                    glDrawBuffer(buffer);
++                    glReadBuffer(buffer);
++                    TWK_GLDEBUG;
++                }
++            }
++
+             if (m_userActive && m_activityTimer.elapsed() > 1.0)
+             {
+                 if (m_doc->mainPopup() && !m_doc->mainPopup()->isVisible())
+-- 
+2.56.0
+

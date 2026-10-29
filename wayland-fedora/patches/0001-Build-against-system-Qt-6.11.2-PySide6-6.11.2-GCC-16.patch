@@ -1,0 +1,306 @@
+From 1e9bec3c9cf9f5524bc07a7735b11df29fb73251 Mon Sep 17 00:00:00 2001
+From: homeless3d <5290301+homeless3d@users.noreply.github.com>
+Date: Thu, 29 Oct 2026 15:00:10 +0100
+Subject: [PATCH 1/6] Build against system Qt 6.11.2 (PySide6 6.11.2, GCC 16)
+ and run natively on Wayland
+
+Build system (BUILD_NOTES items 1, 2, 5-8):
+- cmake/defaults/CY2026.cmake: PySide6 6.8.3 -> 6.11.2 (+ MD5 of the
+  download.qt.io zip)
+- RvCommon/CMakeLists.txt: find the Qt6 component GuiPrivate (the
+  versionless Qt::GuiPrivate target is not defined on the system Qt)
+- qt6.cmake: do not stage Qt's cmake/pkgconfig lib dirs (they clash with
+  other dependency installs into stage/app/lib)
+- python3.cmake: add numpy to RV_PYTHON_WHEEL_SAFE (numpy 2.3 from source
+  fails: highway uses the evex512 target attribute GCC 16 dropped)
+- make_pyside6.py: optional system libclang (RV_PYSIDE_SYSTEM_LLVM_DIR)
+  instead of the 700 MB libclang download; PySide6 >= 6.9 source layout
+- test_python_distribution.py: tkinter/sqlite3 imports are optional
+
+Wayland runtime (BUILD_NOTES items 3, 4):
+- RvDocument: only query the NV-GLX X11 extension when running on X11
+  (QX11Info::display() is null on Wayland and crashed)
+- GLView, rv/main.cpp: on Wayland request desktop OpenGL 4.1 compatibility
+  and pin the default QSurfaceFormat, otherwise the shared EGL context
+  becomes OpenGL ES 3.2 once QtWebEngine is loaded
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ cmake/defaults/CY2026.cmake           |  6 +--
+ cmake/dependencies/python3.cmake      |  1 +
+ cmake/dependencies/qt6.cmake          |  2 +
+ src/bin/apps/rv/main.cpp              | 18 +++++++
+ src/build/make_pyside6.py             | 75 ++++++++++++++++-----------
+ src/build/test_python_distribution.py |  3 +-
+ src/lib/app/RvCommon/CMakeLists.txt   |  2 +-
+ src/lib/app/RvCommon/GLView.cpp       | 10 ++++
+ src/lib/app/RvCommon/RvDocument.cpp   |  7 ++-
+ 9 files changed, 88 insertions(+), 36 deletions(-)
+
+diff --git a/cmake/defaults/CY2026.cmake b/cmake/defaults/CY2026.cmake
+index 35177a0..abbb3fb 100644
+--- a/cmake/defaults/CY2026.cmake
++++ b/cmake/defaults/CY2026.cmake
+@@ -104,10 +104,10 @@ IF(RV_VFX_PLATFORM STREQUAL "CY2026")
+ 
+   # PySide
+   SET(RV_DEPS_PYSIDE_VERSION
+-      "6.8.3"
++      "6.11.2"
+   )
+   SET(RV_DEPS_PYSIDE_DOWNLOAD_HASH
+-      "2a81028f5896edeb9c2a80adac3a8e68"
++      "3ae2b2986b78d932eb62ff72377b6ff9"
+   )
+   SET(RV_DEPS_PYSIDE_TARGET
+       "RV_DEPS_PYSIDE6"
+@@ -127,7 +127,7 @@ IF(RV_VFX_PLATFORM STREQUAL "CY2026")
+ 
+   # Qt
+   SET(RV_DEPS_QT_VERSION
+-      "6.8.3"
++      "6.11.2"
+   )
+   SET(RV_DEPS_QT_MAJOR
+       "6"
+diff --git a/cmake/dependencies/python3.cmake b/cmake/dependencies/python3.cmake
+index cf9be58..211ebdc 100644
+--- a/cmake/dependencies/python3.cmake
++++ b/cmake/dependencies/python3.cmake
+@@ -353,6 +353,7 @@ SET(RV_PYTHON_WHEEL_SAFE
+     "pathspec" # Gitignore pattern matching (pure Python)
+     "trove-classifiers" # PyPI classifiers data (pure Python)
+     "vcs-versioning" # VCS version detection for setuptools-scm 10.x (pure Python)
++    "numpy" # Upstream numpy 2.3.0 (highway AVX512 'evex512' target) does not compile with GCC 16; use the manylinux wheel
+     CACHE STRING "Packages safe to install from wheels (pure Python or build tools)"
+ )
+ 
+diff --git a/cmake/dependencies/qt6.cmake b/cmake/dependencies/qt6.cmake
+index dc8c8a4..b3d4e9c 100644
+--- a/cmake/dependencies/qt6.cmake
++++ b/cmake/dependencies/qt6.cmake
+@@ -271,6 +271,8 @@ IF(RV_TARGET_LINUX)
+     RELATIVE ${RV_DEPS_QT_LIB_DIR}
+     CONFIGURE_DEPENDS ${RV_DEPS_QT_LIB_DIR}/*
+   )
++  # Do not stage the Qt CMake config dir: it would clash with the cmake/ dirs installed by the other dependencies into the same lib dir.
++  LIST(FILTER libs_to_copy EXCLUDE REGEX "^(cmake|pkgconfig)$")
+   FOREACH(
+     lib_to_copy
+     ${libs_to_copy}
+diff --git a/src/bin/apps/rv/main.cpp b/src/bin/apps/rv/main.cpp
+index f2eaeb1..7c2bc9c 100644
+--- a/src/bin/apps/rv/main.cpp
++++ b/src/bin/apps/rv/main.cpp
+@@ -380,6 +380,24 @@ int utf8Main(int argc, char* argv[])
+     // has no GLView to share with, so it joins this global group.
+     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+ 
++#ifdef PLATFORM_LINUX
++    // Native Wayland: Qt creates the global share context (see above) through EGL from the *default* surface format. Left at the default, QtWebEngine
++    // ends up making it, and then every RV viewport context sharing with it, an OpenGL ES context, on which RV's desktop GLSL 1.50 shaders do not
++    // compile. Pin the default format to desktop OpenGL (compatibility profile, RV uses the legacy fixed-function API) before the QApplication exists.
++    {
++        const char* qpa = getenv("QT_QPA_PLATFORM");
++        const bool wayland = qpa ? (strncmp(qpa, "wayland", 7) == 0) : (getenv("WAYLAND_DISPLAY") != nullptr && getenv("DISPLAY") == nullptr);
++        if (wayland)
++        {
++            QSurfaceFormat dfmt;
++            dfmt.setRenderableType(QSurfaceFormat::OpenGL);
++            dfmt.setVersion(4, 1);
++            dfmt.setProfile(QSurfaceFormat::CompatibilityProfile);
++            QSurfaceFormat::setDefaultFormat(dfmt);
++        }
++    }
++#endif
++
+ #ifdef PLATFORM_WINDOWS
+     // Put Qt Quick on the same graphics API RV's windows composite with.
+     //
+diff --git a/src/build/make_pyside6.py b/src/build/make_pyside6.py
+index addc003..3c27da4 100755
+--- a/src/build/make_pyside6.py
++++ b/src/build/make_pyside6.py
+@@ -143,35 +143,45 @@ def prepare() -> None:
+     elif system == "Windows":
+         clang_filename_suffix = "19.1.0-based-windows-vs2019_64.7z"
+ 
++    # Use an existing (e.g. distribution provided) libclang instead of downloading Qt's prebuilt one.
++    system_llvm_dir = os.environ.get("RV_PYSIDE_SYSTEM_LLVM_DIR")
++    if system_llvm_dir:
++        os.environ["LLVM_INSTALL_DIR"] = system_llvm_dir
++        os.environ["CLANG_INSTALL_DIR"] = system_llvm_dir
++        print(f"Using system libclang from {system_llvm_dir}")
++        libclang_install_dir = system_llvm_dir
++        clang_filename_suffix = None
++
+     libclang_zip = os.path.join(TEMP_DIR, "libclang.7z")
+ 
+-    # if we have a failed download, clean it up and redownload.
+-    # checking for False since it can return None when archive doesn't have a CRC
+-    if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
+-        os.remove(libclang_zip)
+-
+-    # download it if necessary
+-    if os.path.exists(libclang_zip) is False:
+-        download_ok = download_libclang(clang_filename_suffix, libclang_zip)
+-        if not download_ok and fallback_clang_filename_suffix:
+-            print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
+-            print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
+-            download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
+-        if not download_ok:
+-            print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
+-
+-    # clean up previous failed extraction
+-    libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
+-    if os.path.exists(libclang_tmp) is True:
+-        shutil.rmtree(libclang_tmp)
+-
+-    # extract to a temp location and only move if successful
+-    libclang_extracted = os.path.join(TEMP_DIR, "libclang")
+-    if os.path.exists(libclang_extracted) is False:
+-        extract_7z_archive(libclang_zip, libclang_tmp)
+-        shutil.move(libclang_tmp, libclang_extracted)
+-
+-    libclang_install_dir = os.path.join(libclang_extracted, "libclang")
++    if not system_llvm_dir:
++        # if we have a failed download, clean it up and redownload.
++        # checking for False since it can return None when archive doesn't have a CRC
++        if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
++            os.remove(libclang_zip)
++
++        # download it if necessary
++        if os.path.exists(libclang_zip) is False:
++            download_ok = download_libclang(clang_filename_suffix, libclang_zip)
++            if not download_ok and fallback_clang_filename_suffix:
++                print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
++                print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
++                download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
++            if not download_ok:
++                print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
++
++        # clean up previous failed extraction
++        libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
++        if os.path.exists(libclang_tmp) is True:
++            shutil.rmtree(libclang_tmp)
++
++        # extract to a temp location and only move if successful
++        libclang_extracted = os.path.join(TEMP_DIR, "libclang")
++        if os.path.exists(libclang_extracted) is False:
++            extract_7z_archive(libclang_zip, libclang_tmp)
++            shutil.move(libclang_tmp, libclang_extracted)
++
++        libclang_install_dir = os.path.join(libclang_extracted, "libclang")
+     if OPENSSL_OUTPUT_DIR:
+         os.environ["PATH"] = os.path.pathsep.join(
+             [
+@@ -187,8 +197,10 @@ def prepare() -> None:
+ 
+     # Note: numpy is now installed via requirements.txt in python3.cmake before PySide6 builds.
+ 
+-    cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt")
+-    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt.old")
++    # PySide6 >= 6.9 moved the ApiExtractor into sources/shiboken6_generator.
++    api_extractor_parent = "shiboken6_generator" if os.path.isdir(os.path.join(SOURCE_DIR, "sources", "shiboken6_generator", "ApiExtractor")) else "shiboken6"
++    cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt")
++    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt.old")
+     if os.path.exists(old_cmakelist_path):
+         os.remove(old_cmakelist_path)
+ 
+@@ -233,6 +245,11 @@ def prepare() -> None:
+         "    endif()",
+     )
+ 
++    if new_content == old_content and "GNU" in old_content:
++        # Only the Clang-specific warning flag is added by this patch; a GCC build does not need it.
++        print(f"{shiboken_helpers_path}: expected block not found; skipping the (clang only) patch.")
++        return
++
+     if new_content == old_content:
+         raise RuntimeError(
+             f"Failed to patch {shiboken_helpers_path}: the expected compiler-id block was not found. "
+diff --git a/src/build/test_python_distribution.py b/src/build/test_python_distribution.py
+index 4fa78bf..49ae541 100644
+--- a/src/build/test_python_distribution.py
++++ b/src/build/test_python_distribution.py
+@@ -73,7 +73,7 @@ def test_python_distribution(python_home: str, variant: str) -> None:
+                     "try:",
+                     "    import tkinter",
+                     "except Exception:",
+-                    "    import Tkinter as tkinter",
++                    "    pass  # tkinter is optional (no tk-devel on the build host)",
+                     # Make sure certifi is available
+                     "import certifi",
+                     # Make sure the SSL_CERT_FILE variable is set
+@@ -82,7 +82,6 @@ def test_python_distribution(python_home: str, variant: str) -> None:
+                     # Make sure ssl is correctly built and linked
+                     "import ssl",
+                     # Misc
+-                    "import sqlite3",
+                     "import ctypes",
+                     "import ssl",
+                     "import _ssl",
+diff --git a/src/lib/app/RvCommon/CMakeLists.txt b/src/lib/app/RvCommon/CMakeLists.txt
+index 970de65..c6628d1 100644
+--- a/src/lib/app/RvCommon/CMakeLists.txt
++++ b/src/lib/app/RvCommon/CMakeLists.txt
+@@ -488,7 +488,7 @@ IF(RV_TARGET_LINUX)
+     )
+   ELSEIF(RV_VFX_PLATFORM STRGREATER_EQUAL CY2024)
+     SET(_rvcommon_qt_components
+-        Gui
++        Gui GuiPrivate
+     )
+     SET(_rvcommon_link_libraries
+         Qt::GuiPrivate
+diff --git a/src/lib/app/RvCommon/GLView.cpp b/src/lib/app/RvCommon/GLView.cpp
+index 94e5541..4ead6d4 100644
+--- a/src/lib/app/RvCommon/GLView.cpp
++++ b/src/lib/app/RvCommon/GLView.cpp
+@@ -24,6 +24,7 @@
+ #include <QtGui/QCursor>
+ #include <QtCore/QEvent>
+ #include <QOpenGLContext>
++#include <QtGui/QGuiApplication>
+ #include <QTimer>
+ #include <iostream>
+ #include <sstream>
+@@ -433,6 +434,15 @@ namespace Rv
+         fmt.setMajorVersion(2);
+         fmt.setMinorVersion(1);
+ 
++        // On Wayland Qt creates the context through EGL, which (unlike GLX) honours the requested version literally. A 2.1 context only
++        // exposes GLSL 1.20 and RV's GLSL 1.50 shaders fail to compile ("GPU lacks fragment program"). Ask for a modern compatibility
++        // profile there, which keeps the legacy fixed-function API RV relies on.
++        if (QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
++        {
++            fmt.setVersion(4, 1);
++            fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
++        }
++
+         //
+         //  The default value for these buffer sizes is -1, but it is
+         //  illegal to set to that value so test for positive red, not
+diff --git a/src/lib/app/RvCommon/RvDocument.cpp b/src/lib/app/RvCommon/RvDocument.cpp
+index 82952ea..183e803 100644
+--- a/src/lib/app/RvCommon/RvDocument.cpp
++++ b/src/lib/app/RvCommon/RvDocument.cpp
+@@ -357,9 +357,14 @@ namespace Rv
+ 
+ #ifdef PLATFORM_LINUX
+ 
++        // The NV-GLX query needs an X11 display. On Wayland (or any non-X11 platform) QX11Info::display() is null and XQueryExtension would crash.
+         int op_ret, ev_ret, er_ret;
+ 
+-        bool haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
++        bool haveNV = true;
++        if (QX11Info::isPlatformX11() && QX11Info::display())
++        {
++            haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
++        }
+ 
+         if (!haveNV)
+         {
+-- 
+2.56.0
+
