@@ -335,6 +335,14 @@ RV_BUILD_PKG_CONFIG_PATH(_ffmpeg_pkg_config_path EXTRA_DIRS ${_ffmpeg_extra_pkgc
 # MinGW-targeted flags incompatible with MSVC.
 SEPARATE_ARGUMENTS(RV_FFMPEG_PATCH_COMMAND_STEP)
 
+# FFmpeg 8.0 dropped av_stream_get_first_dts(), but binaries built against distro FFmpeg (e.g. a system libQt6WebEngineCore) still import it from libavformat.
+# Re-export it so a single bundled libavformat satisfies both RV and QtWebEngine (no LD_PRELOAD of the system FFmpeg needed).
+IF(RV_FFMPEG_8 AND NOT RV_TARGET_WINDOWS AND NOT RV_FFMPEG_PATCH_COMMAND_STEP)
+  SET(RV_FFMPEG_PATCH_COMMAND_STEP
+      patch -p1 -i ${CMAKE_CURRENT_LIST_DIR}/patch/ffmpeg_n8.0_av_stream_get_first_dts.patch
+  )
+ENDIF()
+
 EXTERNALPROJECT_ADD(
   ${_target}
   DEPENDS ${RV_FFMPEG_DEPENDS}
