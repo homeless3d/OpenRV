@@ -143,35 +143,45 @@ def prepare() -> None:
     elif system == "Windows":
         clang_filename_suffix = "19.1.0-based-windows-vs2019_64.7z"
 
+    # Use an existing (e.g. distribution provided) libclang instead of downloading Qt's prebuilt one.
+    system_llvm_dir = os.environ.get("RV_PYSIDE_SYSTEM_LLVM_DIR")
+    if system_llvm_dir:
+        os.environ["LLVM_INSTALL_DIR"] = system_llvm_dir
+        os.environ["CLANG_INSTALL_DIR"] = system_llvm_dir
+        print(f"Using system libclang from {system_llvm_dir}")
+        libclang_install_dir = system_llvm_dir
+        clang_filename_suffix = None
+
     libclang_zip = os.path.join(TEMP_DIR, "libclang.7z")
 
-    # if we have a failed download, clean it up and redownload.
-    # checking for False since it can return None when archive doesn't have a CRC
-    if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
-        os.remove(libclang_zip)
+    if not system_llvm_dir:
+        # if we have a failed download, clean it up and redownload.
+        # checking for False since it can return None when archive doesn't have a CRC
+        if os.path.exists(libclang_zip) and verify_7z_archive(libclang_zip) is False:
+            os.remove(libclang_zip)
 
-    # download it if necessary
-    if os.path.exists(libclang_zip) is False:
-        download_ok = download_libclang(clang_filename_suffix, libclang_zip)
-        if not download_ok and fallback_clang_filename_suffix:
-            print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
-            print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
-            download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
-        if not download_ok:
-            print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
+        # download it if necessary
+        if os.path.exists(libclang_zip) is False:
+            download_ok = download_libclang(clang_filename_suffix, libclang_zip)
+            if not download_ok and fallback_clang_filename_suffix:
+                print(f"WARNING: Could not download or version does not exist: {clang_filename_suffix}")
+                print(f"WARNING: Attempting to fallback on known version: {fallback_clang_filename_suffix}...")
+                download_ok = download_libclang(fallback_clang_filename_suffix, libclang_zip)
+            if not download_ok:
+                print(f"ERROR: Could not download or version does not exist: {clang_filename_suffix}")
 
-    # clean up previous failed extraction
-    libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
-    if os.path.exists(libclang_tmp) is True:
-        shutil.rmtree(libclang_tmp)
+        # clean up previous failed extraction
+        libclang_tmp = os.path.join(TEMP_DIR, "libclang-tmp")
+        if os.path.exists(libclang_tmp) is True:
+            shutil.rmtree(libclang_tmp)
 
-    # extract to a temp location and only move if successful
-    libclang_extracted = os.path.join(TEMP_DIR, "libclang")
-    if os.path.exists(libclang_extracted) is False:
-        extract_7z_archive(libclang_zip, libclang_tmp)
-        shutil.move(libclang_tmp, libclang_extracted)
+        # extract to a temp location and only move if successful
+        libclang_extracted = os.path.join(TEMP_DIR, "libclang")
+        if os.path.exists(libclang_extracted) is False:
+            extract_7z_archive(libclang_zip, libclang_tmp)
+            shutil.move(libclang_tmp, libclang_extracted)
 
-    libclang_install_dir = os.path.join(libclang_extracted, "libclang")
+        libclang_install_dir = os.path.join(libclang_extracted, "libclang")
     if OPENSSL_OUTPUT_DIR:
         os.environ["PATH"] = os.path.pathsep.join(
             [
@@ -187,8 +197,10 @@ def prepare() -> None:
 
     # Note: numpy is now installed via requirements.txt in python3.cmake before PySide6 builds.
 
-    cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt")
-    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", "shiboken6", "ApiExtractor", "CMakeLists.txt.old")
+    # PySide6 >= 6.9 moved the ApiExtractor into sources/shiboken6_generator.
+    api_extractor_parent = "shiboken6_generator" if os.path.isdir(os.path.join(SOURCE_DIR, "sources", "shiboken6_generator", "ApiExtractor")) else "shiboken6"
+    cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt")
+    old_cmakelist_path = os.path.join(SOURCE_DIR, "sources", api_extractor_parent, "ApiExtractor", "CMakeLists.txt.old")
     if os.path.exists(old_cmakelist_path):
         os.remove(old_cmakelist_path)
 
@@ -232,6 +244,11 @@ def prepare() -> None:
         '-Wno-cast-function-type-mismatch")\n'
         "    endif()",
     )
+
+    if new_content == old_content and "GNU" in old_content:
+        # Only the Clang-specific warning flag is added by this patch; a GCC build does not need it.
+        print(f"{shiboken_helpers_path}: expected block not found; skipping the (clang only) patch.")
+        return
 
     if new_content == old_content:
         raise RuntimeError(

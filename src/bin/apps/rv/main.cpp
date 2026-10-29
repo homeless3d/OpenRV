@@ -380,6 +380,24 @@ int utf8Main(int argc, char* argv[])
     // has no GLView to share with, so it joins this global group.
     QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
 
+#ifdef PLATFORM_LINUX
+    // Native Wayland: Qt creates the global share context (see above) through EGL from the *default* surface format. Left at the default, QtWebEngine
+    // ends up making it, and then every RV viewport context sharing with it, an OpenGL ES context, on which RV's desktop GLSL 1.50 shaders do not
+    // compile. Pin the default format to desktop OpenGL (compatibility profile, RV uses the legacy fixed-function API) before the QApplication exists.
+    {
+        const char* qpa = getenv("QT_QPA_PLATFORM");
+        const bool wayland = qpa ? (strncmp(qpa, "wayland", 7) == 0) : (getenv("WAYLAND_DISPLAY") != nullptr && getenv("DISPLAY") == nullptr);
+        if (wayland)
+        {
+            QSurfaceFormat dfmt;
+            dfmt.setRenderableType(QSurfaceFormat::OpenGL);
+            dfmt.setVersion(4, 1);
+            dfmt.setProfile(QSurfaceFormat::CompatibilityProfile);
+            QSurfaceFormat::setDefaultFormat(dfmt);
+        }
+    }
+#endif
+
 #ifdef PLATFORM_WINDOWS
     // Put Qt Quick on the same graphics API RV's windows composite with.
     //

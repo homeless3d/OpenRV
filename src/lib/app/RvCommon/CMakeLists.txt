@@ -488,7 +488,7 @@ IF(RV_TARGET_LINUX)
     )
   ELSEIF(RV_VFX_PLATFORM STRGREATER_EQUAL CY2024)
     SET(_rvcommon_qt_components
-        Gui
+        Gui GuiPrivate
     )
     SET(_rvcommon_link_libraries
         Qt::GuiPrivate

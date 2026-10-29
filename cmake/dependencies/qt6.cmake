@@ -271,6 +271,8 @@ IF(RV_TARGET_LINUX)
     RELATIVE ${RV_DEPS_QT_LIB_DIR}
     CONFIGURE_DEPENDS ${RV_DEPS_QT_LIB_DIR}/*
   )
+  # Do not stage the Qt CMake config dir: it would clash with the cmake/ dirs installed by the other dependencies into the same lib dir.
+  LIST(FILTER libs_to_copy EXCLUDE REGEX "^(cmake|pkgconfig)$")
   FOREACH(
     lib_to_copy
     ${libs_to_copy}

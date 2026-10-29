@@ -353,6 +353,7 @@ SET(RV_PYTHON_WHEEL_SAFE
     "pathspec" # Gitignore pattern matching (pure Python)
     "trove-classifiers" # PyPI classifiers data (pure Python)
     "vcs-versioning" # VCS version detection for setuptools-scm 10.x (pure Python)
+    "numpy" # Upstream numpy 2.3.0 (highway AVX512 'evex512' target) does not compile with GCC 16; use the manylinux wheel
     CACHE STRING "Packages safe to install from wheels (pure Python or build tools)"
 )
 

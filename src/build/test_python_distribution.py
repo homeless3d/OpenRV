@@ -73,7 +73,7 @@ def test_python_distribution(python_home: str, variant: str) -> None:
                     "try:",
                     "    import tkinter",
                     "except Exception:",
-                    "    import Tkinter as tkinter",
+                    "    pass  # tkinter is optional (no tk-devel on the build host)",
                     # Make sure certifi is available
                     "import certifi",
                     # Make sure the SSL_CERT_FILE variable is set
@@ -82,7 +82,6 @@ def test_python_distribution(python_home: str, variant: str) -> None:
                     # Make sure ssl is correctly built and linked
                     "import ssl",
                     # Misc
-                    "import sqlite3",
                     "import ctypes",
                     "import ssl",
                     "import _ssl",

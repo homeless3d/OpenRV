@@ -357,9 +357,14 @@ namespace Rv
 
 #ifdef PLATFORM_LINUX
 
+        // The NV-GLX query needs an X11 display. On Wayland (or any non-X11 platform) QX11Info::display() is null and XQueryExtension would crash.
         int op_ret, ev_ret, er_ret;
 
-        bool haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
+        bool haveNV = true;
+        if (QX11Info::isPlatformX11() && QX11Info::display())
+        {
+            haveNV = XQueryExtension(QX11Info::display(), "NV-GLX", &op_ret, &ev_ret, &er_ret);
+        }
 
         if (!haveNV)
         {

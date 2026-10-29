@@ -24,6 +24,7 @@
 #include <QtGui/QCursor>
 #include <QtCore/QEvent>
 #include <QOpenGLContext>
+#include <QtGui/QGuiApplication>
 #include <QTimer>
 #include <iostream>
 #include <sstream>
@@ -432,6 +433,15 @@ namespace Rv
         // NOTE_QT: Set to version 2.1 for now.
         fmt.setMajorVersion(2);
         fmt.setMinorVersion(1);
+
+        // On Wayland Qt creates the context through EGL, which (unlike GLX) honours the requested version literally. A 2.1 context only
+        // exposes GLSL 1.20 and RV's GLSL 1.50 shaders fail to compile ("GPU lacks fragment program"). Ask for a modern compatibility
+        // profile there, which keeps the legacy fixed-function API RV relies on.
+        if (QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
+        {
+            fmt.setVersion(4, 1);
+            fmt.setProfile(QSurfaceFormat::CompatibilityProfile);
+        }
 
         //
         //  The default value for these buffer sizes is -1, but it is
