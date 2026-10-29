@@ -25,6 +25,7 @@
 #include <TwkGLF/GLVideoDevice.h>
 #include <QOpenGLContext>
 #include <QKeyEvent>
+#include <QPointer>
 #include <QResizeEvent>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QApplication>
@@ -120,6 +121,98 @@ namespace Rv
             event->accept();
             return true;
         }
+
+        //
+        //  Wayland has no X11-style implicit pointer grab across the surfaces
+        //  of a window: when a drag that started in the viewport (a
+        //  subsurface) crosses into the rest of the main window, GNOME moves
+        //  the pointer focus to the main window's surface, and back to the
+        //  viewport once the pointer leaves the window, and Qt forgets the held
+        //  buttons on every such move. So a scrub stopped as soon as it left
+        //  the viewport. While a button pressed in the viewport is down, hand
+        //  the viewport every move and the release, with the buttons that are
+        //  actually held, wherever Qt delivered them.
+        //
+        class WaylandPointerGrab : public QObject
+        {
+        public:
+            static WaylandPointerGrab& instance()
+            {
+                static WaylandPointerGrab grab;
+                return grab;
+            }
+
+            void begin(GLWindow* window, Qt::MouseButtons buttons)
+            {
+                m_window = window;
+                m_buttons = buttons;
+                qApp->installEventFilter(this);
+            }
+
+            bool eventFilter(QObject* object, QEvent* event) override
+            {
+                const QEvent::Type type = event->type();
+
+                //  A popup (e.g. the one a right-press opens) takes the pointer
+                //  over, as its X11 grab does.
+                if (QApplication::activePopupWidget() != nullptr)
+                {
+                    end();
+                    return false;
+                }
+
+                //  No crossing events during the grab, as on X11 (where Qt drops
+                //  them while a button is down): RV ends a drag on a leave.
+                if ((type == QEvent::Enter || type == QEvent::Leave) && object->isWindowType() && !m_window.isNull())
+                {
+                    return true;
+                }
+
+                //  Only at the window level: a widget window passes the same
+                //  event on to its widgets.
+                if ((type != QEvent::MouseMove && type != QEvent::MouseButtonRelease) || !object->isWindowType())
+                {
+                    return false;
+                }
+
+                const auto* mouseEvent = static_cast<const QMouseEvent*>(event);
+
+                if (type == QEvent::MouseButtonRelease)
+                {
+                    m_buttons &= ~mouseEvent->button();
+                }
+
+                GLWindow* window = m_window;
+                const Qt::MouseButtons buttons = m_buttons;
+
+                if (window == nullptr || buttons == Qt::NoButton)
+                {
+                    end();
+                }
+
+                if (window == nullptr || (object == window && (type == QEvent::MouseButtonRelease || mouseEvent->buttons() == buttons)))
+                {
+                    return false;
+                }
+
+                const QPointF globalPosition = mouseEvent->globalPosition();
+                QMouseEvent grabbedEvent(type, window->mapFromGlobal(globalPosition), globalPosition, mouseEvent->button(), buttons,
+                                         mouseEvent->modifiers(), mouseEvent->pointingDevice());
+                QCoreApplication::sendEvent(window, &grabbedEvent);
+                return true;
+            }
+
+        private:
+            void end()
+            {
+                qApp->removeEventFilter(this);
+                m_window.clear();
+                m_buttons = Qt::NoButton;
+            }
+
+            QPointer<GLWindow> m_window;
+            Qt::MouseButtons m_buttons{Qt::NoButton};
+        };
     } // namespace
 
     using namespace std;
@@ -606,6 +699,12 @@ namespace Rv
         if (forwardToActivePopup(event))
         {
             return true;
+        }
+
+        if ((event->type() == QEvent::MouseButtonPress || event->type() == QEvent::MouseButtonDblClick)
+            && QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
+        {
+            WaylandPointerGrab::instance().begin(this, static_cast<QMouseEvent*>(event)->buttons());
         }
 
         if (event->type() == QEvent::WindowActivate)
