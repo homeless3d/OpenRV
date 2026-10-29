@@ -1,7 +1,7 @@
 From d675d6f5fbb19781ae7bb563917b32682240be53 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 29 Oct 2026 18:39:33 +0100
-Subject: [PATCH 4/6] RvDocument: disconnect only RV's own menu connections
+Subject: [PATCH 4/7] RvDocument: disconnect only RV's own menu connections
  when purging menus
 
 purgeMenus() called QMenu::disconnect() with no arguments on every menu.

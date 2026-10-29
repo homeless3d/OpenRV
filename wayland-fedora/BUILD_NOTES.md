@@ -1,9 +1,9 @@
 # OpenRV (main, cade394, "4.0.0") against SYSTEM Qt 6.11.2 on Fedora 44 / Wayland
 
-Workspace: `$OQ` (any directory; `src/` = a checkout of branch `wayland-qt6` of this fork, i.e. OpenRV main at cade394 plus the six commits
-below; `patches/0001..0006` are the same commits as `git format-patch`, `patches/source_patches.diff` is the combined diff cade394..HEAD).
+Workspace: `$OQ` (any directory; `src/` = a checkout of branch `wayland-qt6` of this fork, i.e. OpenRV main at cade394 plus the seven commits
+below; `patches/0001..0007` are the same commits as `git format-patch`, `patches/source_patches.diff` is the combined diff cade394..HEAD).
 Commit <-> patch: 0001 build against system Qt/PySide6/GCC16 + Wayland GL/X11 fixes, 0002 GL_BACK draw buffer, 0003 viewport drags/scrub,
-0004 menu disconnect warnings, 0005 FFmpeg av_stream_get_first_dts, 0006 legacy QSS + window size. (Items below mention the patch number
+0004 menu disconnect warnings, 0005 FFmpeg av_stream_get_first_dts, 0006 legacy QSS + window size, 0007 file dialog size grip. (Items below mention the patch number
 where they used to quote a commit hash.)
 Result: `./run_rv_wayland.sh [files]` -> native Wayland, libadwaita client decoration (confirmed loaded via /proc/<pid>/maps),
 desktop OpenGL 4.6 (NVIDIA), PySide6 6.11.2 in the bundled Python 3.13. Wall time ~2h45m, ~14 GB disk. VFX platform: CY2026.
@@ -93,6 +93,17 @@ Gotcha: `pgrep -f <cmd>` in wait loops matches the waiting shell itself.
    Repaint scheduling on Wayland was NOT the problem: update() -> QWaylandWindow::requestUpdate -> frame callback -> paintGL works; RV simply stops
    requesting redraws once the frame is idle. A tried GLView change (setAlphaBufferSize(0) on Wayland) turned out to be unnecessary (the grey came from
    the same GL_NONE draw buffer: the alpha=1 clear never reached the surface) and was dropped; the viewport format is the same as on X11.
+12. RvFileDialog.cpp (patch 0007), ON WAYLAND ONLY: File > Open dialog, the bottom-right corner of the Open/Save button was cut off (square notch).
+   Not the decoration: it is QDialog's size grip (RvFileDialog enables it). A -pyeval probe (open the dialog with
+   commands.openMediaFileDialog from a QTimer, dump child geometry) gave grip 17x17 at (980,463) in a 997x480 dialog, Open button right 989 /
+   bottom 472: a 9x9 px overlap, because the layout's right/bottom margins are 8 px. The grip is raised above the layout and the QSS rule
+   `QWidget { background-color: rgb(50,50,50) }` makes QStyleSheetStyle paint it as an opaque flat square (no grip glyph); it also takes the
+   clicks there. The window itself was not clipped (QWindow 997x480 == widget size, adwaita frame margins 11/49/11/11).
+   Identical overlap and notch on xcb (Qt 6, Xvfb) and in the original Qt 5 build (Xvfb): an upstream bug, not Qt6/Wayland-specific.
+   Fix: setSizeGripEnabled(false) when the platform is wayland* (the decoration or compositor provides the resize edges); X11 unchanged.
+   Verified: weston headless capture, button corner complete; headless mutter: dragging the dialog's bottom-right decoration edge resizes it
+   (997x480 -> 1047x520) and a click on the former notch pixel (local 1035,508) presses Open; xcb still has the grip.
+   The console window (RvConsoleWindow) also has a grip but its Close button ends 4 px left of it (no overlap); no other dialog has one.
 
 ## Fixes applied to downloaded dependency sources / build dirs (NOT in diffs; redo if build/ is wiped)
 - Breakpad 2024.02.16: minidump_stackwalk/microdump_stackwalk fail to link (vtable FastSourceLineResolver::Module). In build/RV_DEPS_BREAKPAD/build:

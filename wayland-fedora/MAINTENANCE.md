@@ -6,7 +6,7 @@ Everything here assumes the layout from the README: workspace `$OQ`, this reposi
 ## 0. Things that must stay true
 
 * Fork `main` == upstream `main`; never commit there. Work happens on `wayland-qt6` (or a dated successor, see 1).
-* The six code commits stay small, one concern each; docs/scripts live only under `wayland-fedora/`.
+* The seven code commits stay small, one concern each; docs/scripts live only under `wayland-fedora/`.
 * After any change to the code commits run `git format-patch` again (the update script does it) so `patches/` matches.
 * No binaries (rpm, build trees) in git. `packaging/.gitignore` already excludes `work/`, `out/`, `*.rpm`.
 

@@ -1,6 +1,6 @@
 # OpenRV on Wayland with the system Qt 6 (Fedora) -- `wayland-qt6`
 
-This branch of the fork is **OpenRV `main` (at `cade394`, "4.0.0", VFX platform CY2026) plus six small commits** that make
+This branch of the fork is **OpenRV `main` (at `cade394`, "4.0.0", VFX platform CY2026) plus seven small commits** that make
 it build against the **system Fedora Qt 6.11.2 / PySide6 6.11.2 / GCC 16 / FFmpeg 8** and run **natively on Wayland**
 (libadwaita client-side decorations on GNOME, desktop OpenGL 4.6) with OpenRV's **original gradient look**. This directory
 (`wayland-fedora/`) holds the notes, scripts and patches around those commits; it is the only thing added to the tree.
@@ -8,7 +8,7 @@ Upstream's own `README.md` is untouched; upstream is <https://github.com/Academy
 
 * Fork `main` is a plain mirror of upstream `main` (never committed to). All work lives on `wayland-qt6`;
   tag `upstream-base-cade394` marks the upstream commit the commits sit on.
-* The code commits are also available as plain patches: [`patches/0001..0006`](patches) and
+* The code commits are also available as plain patches: [`patches/0001..0007`](patches) and
   [`patches/source_patches.diff`](patches/source_patches.diff) (the combined diff against upstream, `wayland-fedora/` excluded).
 * **Binaries are not distributed** (no releases, no rpm): the build enables FFmpeg decoders that are patent-encumbered in some
   jurisdictions (AAC, HEVC, ...) and the rpm bundles a Qt/QtWebEngine snapshot. Build it yourself, see below.
@@ -28,11 +28,12 @@ environment. Read the "not verified" column honestly.
 | Menu warnings (0004) | `QObject::disconnect` warnings 222 -> 0 per menu rebuild | -- |
 | Video decode (0005) | weston headless `-play`: H.264, H.264+AAC, B-frames, HEVC, ProRes 422 10-bit, mpeg4 .mov, jpg sequence; no `sendPacketToDecoder`, no crash dump | **audio output** (no sound device; AAC only decoded), hardware decode, VP9 (OpenRV always disables it) |
 | Original look + window size (0006) | xcb 1024x657 == the original; Wayland 1024x655 client | HiDPI / fractional scaling |
+| File dialog corner (0007) | weston headless capture: Open button complete; headless mutter: dialog still resizes from its decoration edge, click on the former notch presses Open; xcb keeps the grip | real GNOME session, HiDPI / fractional scaling |
 | xcb fallback | Xvfb: starts and plays | -- |
 | Web panels (QtWebEngine) | in the locally built rpm: a `QWebEngineView` created from Python rendered (`loadFinished ok=True`) | interactive use of the built-in web pages |
 | Self-contained rpm | built locally (`packaging/build_rpm.sh`), unpacked privately (`rpm2cpio`, `unshare -r`), run with a scrubbed environment and with the host Qt/ICU/FFmpeg/NSS libraries hidden: 0 stray library mappings | actually installing it with `dnf`/`rpm` (scriptlets), other Fedora releases (glibc is forward-only), GTK file dialogs |
 
-Details and the reasoning behind each item are in [`BUILD_NOTES.md`](BUILD_NOTES.md) (numbered items 1-11 + the FFmpeg and
+Details and the reasoning behind each item are in [`BUILD_NOTES.md`](BUILD_NOTES.md) (numbered items 1-12 + the FFmpeg and
 look sections; it is the lab notebook of the first build).
 
 ## The commits (in order) and why
@@ -45,6 +46,7 @@ look sections; it is the lab notebook of the first build).
 | 0004 | **RvDocument: disconnect only RV's own menu connections when purging menus** | Qt 6.11 warns on wildcard `disconnect()`; 222 warnings per menu rebuild, and it also cut foreign connections (11) |
 | 0005 | **FFmpeg n8.0: re-export `av_stream_get_first_dts` from libavformat** | The system `libQt6WebEngineCore` imports a symbol FFmpeg 8 removed; re-exporting it lets the bundled FFmpeg (with H.264/HEVC) serve both, so the old `LD_PRELOAD` of the decoder-less Fedora FFmpeg is gone (FFmpeg section) |
 | 0006 | **Linux: use the original (legacy) gradient QSS; size window incl. menubar on Qt6** | Upstream `main` ships a new flat theme; the original gradient sheet is still in the tree (`rv_linux_dark_legacy.qss`). Qt6 sized the window while the menubar was empty (original look section) |
+| 0007 | **RvFileDialog: no size grip on Wayland (it covered the Open button's corner)** | QDialog's 17x17 size grip, painted opaque by the QSS `QWidget` background rule, overlapped the Open/Save button by 9x9 px (8 px layout margins); upstream bug (also xcb and Qt 5), removed only on Wayland where the decoration resizes (12) |
 
 Things that are **not** in the commits because they live in downloaded dependency sources / cache variables are listed in
 `BUILD_NOTES.md` ("Fixes applied to downloaded dependency sources"): the Breakpad link line, `yaml-cpp` `<cstdint>`,
@@ -60,7 +62,7 @@ libdeflate/highway `-D__EVEX512__`, and the cache variable
 | [`MAINTENANCE.md`](MAINTENANCE.md) | **what to do when upstream OpenRV, Qt, PySide6, GCC/glibc or FFmpeg change** |
 | [`env.sh`](env.sh) | environment template (`source` before `cmake`/`ninja`; paths derive from `$OQ`) |
 | [`run_rv_wayland.sh`](run_rv_wayland.sh) | launcher: `QT_QPA_PLATFORM=wayland`, `QT_WAYLAND_DECORATION=adwaita` |
-| [`patches/`](patches) | `git format-patch` of the six commits + combined `source_patches.diff` (regenerated by the update script) |
+| [`patches/`](patches) | `git format-patch` of the seven commits + combined `source_patches.diff` (regenerated by the update script) |
 | [`packaging/`](packaging) | self-contained rpm: `build_rpm.sh`, `openrv.spec`, `closure.py`, `excludelist.txt`, launcher, `.desktop`, notes, test scripts |
 | [`tools/update-from-upstream.sh`](tools/update-from-upstream.sh) | replay the commits on a new upstream `main`, report conflicts per commit, regenerate `patches/` |
 | [`tools/make_qt_prefix.sh`](tools/make_qt_prefix.sh) | rebuild the synthetic Qt prefix (`-DRV_DEPS_QT_LOCATION`) from Fedora's `-devel` rpms, no root |

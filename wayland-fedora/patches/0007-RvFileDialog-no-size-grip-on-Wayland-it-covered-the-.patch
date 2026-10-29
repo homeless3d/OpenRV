@@ -1,0 +1,46 @@
+From fe623857d5bbabee51fa5393be030bf65335b924 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 29 Oct 2026 21:21:58 +0100
+Subject: [PATCH 7/7] RvFileDialog: no size grip on Wayland (it covered the
+ Open button's corner)
+
+The file dialog enables QDialog's size grip. QDialog places it as a 17x17
+child in the bottom-right corner, raised above the layout, and the style
+sheet's `QWidget { background-color: rgb(50,50,50) }` rule makes it paint an
+opaque square (QStyleSheetStyle CE_SizeGrip with a background but no image:
+no grip glyph). The dialog layout's right/bottom margins are only 8 px, so
+the grip covers a 9x9 px corner of the rightmost button (Open/Save) and also
+takes the clicks there.
+
+Measured with a -pyeval probe: grip (980,463 17x17), Open button right 989,
+bottom 472 (Wayland); the same overlap exists on xcb with Qt 6 and in the
+original Qt 5 build, so it is an upstream bug, not a Wayland one.
+
+On Wayland the decoration (libadwaita / bradient plugin) or the compositor
+already provides the resize edges, so do not create the grip there. X11 keeps
+the grip (unchanged behaviour).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/lib/app/RvCommon/RvFileDialog.cpp | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/lib/app/RvCommon/RvFileDialog.cpp b/src/lib/app/RvCommon/RvFileDialog.cpp
+index ff1a7bc..18c9c72 100644
+--- a/src/lib/app/RvCommon/RvFileDialog.cpp
++++ b/src/lib/app/RvCommon/RvFileDialog.cpp
+@@ -179,7 +179,10 @@ namespace Rv
+         m_ui.autoRefreshCheckbox->setCheckState((m_allowAutoRefresh) ? Qt::Checked : Qt::Unchecked);
+ 
+         setWindowTitle("Select Files/Directories");
+-        setSizeGripEnabled(true);
++        // The size grip is a 17x17 child in the bottom-right corner, painted opaque by the style sheet's QWidget background rule.
++        // The layout's right/bottom margins are only 8 px, so it covers a 9x9 corner of the Open/Save button (and catches clicks
++        // there). On Wayland the window decoration / compositor already provides the resize edges, so do not create it there.
++        setSizeGripEnabled(!QGuiApplication::platformName().startsWith(QLatin1String("wayland")));
+         m_reloadTimer = new QTimer(this);
+         m_sidePanelTimer = new QTimer(this);
+         m_columnViewTimer = new QTimer(this);
+-- 
+2.56.0
+
