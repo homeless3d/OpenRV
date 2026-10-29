@@ -1,0 +1,11 @@
+This package redistributes, unmodified, shared libraries and plugins of Qt 6 (including QtWebEngine/Chromium,
+PySide6 is the Qt-for-Python binding built from the unmodified PySide6 6.11.2 sources) as copied from the Fedora
+qt6-* packages, plus the libraries those depend on (ICU, NSS/NSPR, libxkbcommon, xcb-util, libwebp, ...).
+Qt is used under the terms of the LGPL v3 (QtWebEngine: LGPL v3 + the BSD/MIT/... licences of Chromium's
+third-party components). All these libraries are ordinary shared objects in /opt/openrv/lib and
+/opt/openrv/plugins/Qt that are looked up through $ORIGIN-relative RUNPATH entries and qt.conf; replacing
+them with your own build of the same Qt version satisfies the LGPL relinking requirement.
+Source of the Fedora packages: https://src.fedoraproject.org/ (qt6-qtbase, qt6-qtwebengine, qt6-qtwayland, ...).
+FFmpeg (libavcodec/libavformat/libavutil in /opt/openrv/lib) is built by the OpenRV build as an LGPL-2.1-or-later
+library (no --enable-gpl / --enable-nonfree). Its AAC, HEVC, ProRes, DNxHD, AC-3, MPEG-2, QuickTime RLE and DV
+decoders are enabled in this build; they may be covered by patents in some jurisdictions.

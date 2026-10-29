@@ -1,0 +1,9 @@
+# libraries loaded with dlopen() by name (invisible to ldd), globbed in /usr/lib64 and copied into lib/
+# NSS (Chromium's crypto/certificate backend) loads its token modules by name
+libsoftokn3.so
+libsoftokn3.chk
+libfreeblpriv3.so
+libfreeblpriv3.chk
+libfreebl3.so
+libnssckbi.so
+libnsssysinit.so

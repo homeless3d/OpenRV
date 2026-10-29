@@ -1,0 +1,54 @@
+# Libraries that stay SYSTEM provided (never copied into the package).
+# One POSIX ERE per line, matched with re.match against the SONAME.
+# Modelled on the AppImage "excludelist"; the reason for each group is in README.md.
+
+# --- glibc and friends: the package is forward compatible only (newer glibc runs it)
+^ld-linux
+^lib(c|m|dl|rt|pthread|util|resolv|nsl|anl|thread_db|BrokenLocale|mvec|crypt|nss_[a-z]+)\.so
+# --- compiler runtime: must be the system one (Mesa/driver libs load it too; it is forward compatible)
+^lib(stdc\+\+|gcc_s|gomp|atomic|quadmath)\.so
+# --- GPU / window system stack: vendor driver (Mesa or NVIDIA) must match the kernel/hardware
+^lib(GL|GLX|GLdispatch|EGL|GLESv1_CM|GLESv2|OpenGL|GLU|gbm|vulkan|gallium|LLVM|OSMesa|nvidia|cuda)[-_.0-9a-z]*\.so
+^libGLX_
+^libdrm[_a-z]*\.so
+^libva[-a-z0-9]*\.so
+^libvdpau
+^libxshmfence\.so
+# --- Wayland client libs: shared by the Qt plugin AND the EGL driver in one process (wl_proxy objects cross the boundary)
+^libwayland-(client|cursor|egl|server)\.so
+# --- X11 core client libs: the GLX/DRI drivers link them too, one instance per process
+^libX(11|11-xcb|au|dmcp|ext|fixes|render|i|composite|damage|randr|tst|xf86vm|cursor|inerama|ss|v|mu|pm|t|aw)\.so
+^lib(SM|ICE)\.so
+^libxcb\.so
+^libxcb-(dri2|dri3|glx|present|sync|xfixes|randr|shm)\.so
+# --- session / system services: IPC and device ABIs owned by the host
+^libdbus-1\.so
+^libudev\.so
+^libsystemd\.so
+^libselinux\.so
+^libmount\.so
+^libblkid\.so
+^libuuid\.so
+^libcap(-ng)?\.so
+^libaudit\.so
+^libgudev
+^libinput\.so
+^libevdev\.so
+^libmtdev\.so
+^libwacom\.so
+# --- audio servers: the client lib has to match the running daemon
+^libasound\.so
+^libpulse
+^libpipewire
+^libspa
+^libjack
+^libsndfile\.so
+# --- GLib family (Qt uses it for the event dispatcher/portals; GIO modules and dconf are host plugins)
+^lib(glib|gobject|gio|gmodule|gthread)-2\.0\.so
+^libpcre2-8\.so
+# --- font stack: fontconfig reads the host's /etc/fonts and must match the host's freetype/harfbuzz
+^lib(fontconfig|freetype|harfbuzz|harfbuzz-subset|graphite2)\.so
+# --- libs only reached through the host stack or too big/ugly to carry (curl+krb5+ldap+ssh2..)
+^lib(curl|krb5|k5crypto|gssapi_krb5|krb5support|keyutils|com_err|ldap|lber|sasl2|ssh|ssh2|nghttp2|nghttp3|ngtcp2[a-z_]*|idn2|psl|unistring|fido2|cbor|proxy|pxbackend|duktape)[-_.0-9a-z]*\.so
+# --- patent-encumbered codec: only Cisco's own binary carries the patent grant
+^libopenh264\.so
