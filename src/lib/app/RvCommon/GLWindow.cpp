@@ -390,6 +390,26 @@ namespace Rv
             m_videoDevice->makeCurrent();
             TWK_GLDEBUG;
 
+            //
+            //  On Wayland RV makes this window's context current before its
+            //  surface exists, which Qt does without a surface (EGL surfaceless).
+            //  EGL then initializes the context's draw and read buffers to
+            //  GL_NONE and keeps them when the window surface is bound later, so
+            //  everything drawn to the window is discarded. Restore them.
+            //
+            if (defaultFramebufferObject() == 0 && QGuiApplication::platformName().startsWith(QLatin1String("wayland")))
+            {
+                GLint drawBuffer = GL_NONE;
+                glGetIntegerv(GL_DRAW_BUFFER, &drawBuffer);
+                if (drawBuffer == GL_NONE)
+                {
+                    const GLenum buffer = format().swapBehavior() == QSurfaceFormat::SingleBuffer ? GL_FRONT : GL_BACK;
+                    glDrawBuffer(buffer);
+                    glReadBuffer(buffer);
+                    TWK_GLDEBUG;
+                }
+            }
+
             if (m_userActive && m_activityTimer.elapsed() > 1.0)
             {
                 if (m_doc->mainPopup() && !m_doc->mainPopup()->isVisible())
