@@ -11,7 +11,7 @@ No sudo, nothing installed system-wide; extra rpms were only downloaded and extr
 
 ## Environment (env.sh; `source env.sh` before cmake/ninja)
 - venv/ (uv, python3.11: meson pyyaml requests wheel py7zr setuptools packaging) first on PATH (cmake scripts call `python3`).
-- tools/bin/nasm (copied from ../openrv-build), sysroot/ (headers/libs from rpms, see below), dl/perl (perl modules from rpms).
+- tools/bin/nasm (copied from the old Qt5 build tree (see legacy-qt5/)), sysroot/ (headers/libs from rpms, see below), dl/perl (perl modules from rpms).
 - CPATH, LIBRARY_PATH, CMAKE_INCLUDE_PATH, CMAKE_LIBRARY_PATH -> sysroot (env CMAKE_*_PATH is needed because ExternalProject sub-builds ignore -D).
 - CMAKE_POLICY_VERSION_MINIMUM=3.5
 - CFLAGS="-D__EVEX512__", CXXFLAGS="-include cstdint -D__EVEX512__"  (GCC 16: yaml-cpp needs <cstdint>; libdeflate refuses the removed `evex512` target attr)
