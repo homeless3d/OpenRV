@@ -24,4 +24,15 @@ except ImportError:
     except ImportError:
         pass
 
-setup_webview_default_profile()
+# QWebEngineProfile.defaultProfile() initialises Chromium (about a second on the main thread).
+# Nothing needs the user agent before the event loop runs (web views are created on demand),
+# so do it shortly after the first window is up instead of delaying it.
+try:
+    from PySide6.QtCore import QTimer
+except ImportError:
+    QTimer = None
+
+if QTimer is not None:
+    QTimer.singleShot(600, setup_webview_default_profile)
+else:
+    setup_webview_default_profile()
