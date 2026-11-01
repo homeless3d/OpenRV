@@ -2,7 +2,6 @@ import hashlib
 import logging
 import math
 import os
-import psutil
 import shutil
 import subprocess
 import sys
@@ -33,6 +32,8 @@ _IS_WIN32 = sys.platform == "win32"
 
 
 def _suspend_proc(proc: subprocess.Popen) -> None:
+    import psutil  # lazy: ~35 ms, only needed when a thumbnail job is suspended
+
     try:
         psutil.Process(proc.pid).suspend()
     except psutil.Error:
@@ -40,6 +41,8 @@ def _suspend_proc(proc: subprocess.Popen) -> None:
 
 
 def _resume_proc(proc: subprocess.Popen) -> None:
+    import psutil
+
     try:
         psutil.Process(proc.pid).resume()
     except psutil.Error:

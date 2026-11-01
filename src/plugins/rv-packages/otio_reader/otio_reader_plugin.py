@@ -33,10 +33,15 @@ import sys
 from rv import commands, extra_commands
 from rv import rvtypes
 
-import opentimelineio as otio
+# opentimelineio (and the otio_reader / otio_writer modules built on it) cost
+# ~150 ms to import, so they are imported on first use rather than at startup.
 
-import otio_reader
-import otio_writer
+# Extensions of ordinary media that no OTIO adapter claims: skip the otio
+# import for them in incoming_source_path (a custom adapter is only consulted
+# for other extensions).
+_NON_OTIO_EXTS = frozenset(
+    "exr dpx cin tif tiff jpg jpeg png tga bmp hdr sgi rgb mov mp4 m4v mxf mkv avi webm mpg mpeg wav aif aiff mp3 m4a gto rv movieproc".split()
+)
 
 
 class Mode(object):
@@ -98,6 +103,11 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
         if ext:
             ext = ext[1:]
 
+        if ext.lower() in _NON_OTIO_EXTS:
+            return
+
+        import opentimelineio as otio
+
         if ext in otio.adapters.suffixes_with_defined_adapters(read=True):
             self.mode = Mode.loading
             movieproc = "blank,otioFile={}.movieproc".format(in_path)
@@ -155,6 +165,8 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
         Exports the currently viewed node to the OTIO file from the event
         """
         event.reject()
+        import otio_writer
+
         otio_writer.write_otio_file(commands.viewNode(), event.contents())
 
     def expand_sources(self):
@@ -188,6 +200,8 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
                     # remove temp movieproc source from current view, and all
                     # the default views
                     _remove_source_from_views(src_group)
+
+                    import otio_reader
 
                     result = otio_reader.read_otio_file(path)
                     commands.setViewNode(result)
