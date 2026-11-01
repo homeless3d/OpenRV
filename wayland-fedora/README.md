@@ -54,6 +54,21 @@ libdeflate/highway `-D__EVEX512__`, and the cache variable
 `-DRV_FFMPEG_NON_FREE_DECODERS_TO_ENABLE="aac;hevc;ac3;ac3_fixed;eac3;mpeg2video;vp9;prores;dnxhd;qtrle;dvvideo"`
 (check the patent/licence situation of those codecs before you build or redistribute).
 
+## Documentation
+
+The story, findings and operating notes of the whole port are in [`docs/`](docs) (start with the index, which also has a
+short Spanish summary):
+
+| Document | Content |
+|---|---|
+| [`docs/00-INDEX.md`](docs/00-INDEX.md) | Summary, reading order, table of changes vs upstream |
+| [`docs/01-journey.md`](docs/01-journey.md) | Chronological narrative and decisions |
+| [`docs/02-technical-discoveries.md`](docs/02-technical-discoveries.md) | Every bug: symptom, root cause, fix, commit |
+| [`docs/03-startup-performance.md`](docs/03-startup-performance.md) | Startup analysis, numbers, round 2 (in progress) |
+| [`docs/04-packaging-rpm.md`](docs/04-packaging-rpm.md) | The self-contained rpm |
+| [`docs/05-testing-and-testbeds.md`](docs/05-testing-and-testbeds.md) | Headless test beds, what was verified where |
+| [`docs/06-open-issues.md`](docs/06-open-issues.md) | Open issues, caveats, licence note |
+
 ## Layout of this directory
 
 | Path | What |
