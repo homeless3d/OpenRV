@@ -19,8 +19,6 @@ import sys
 import os
 
 try:
-    import certifi
-
     # Do not set SSL_CERT_FILE to our own if it is already set. Someone could
     # have their own certificate authority that they specify with this env var.
     # Unfortunately this is not a PATH like environment variable, so we can't
@@ -30,7 +28,17 @@ try:
     # verifying certificates, visit
     # https://www.openssl.org/docs/man1.1.0/ssl/SSL_CTX_set_default_verify_paths.html
     if "SSL_CERT_FILE" not in os.environ and "DO_NOT_SET_SSL_CERT_FILE" not in os.environ:
-        os.environ["SSL_CERT_FILE"] = certifi.where()
+        # Locate certifi without importing it (importing it costs ~0.2 s at every startup);
+        # fall back to certifi.where() if the bundle is not next to the package.
+        import importlib.util
+
+        spec = importlib.util.find_spec("certifi")
+        cafile = os.path.join(os.path.dirname(spec.origin), "cacert.pem") if spec and spec.origin else None
+        if cafile is None or not os.path.isfile(cafile):
+            import certifi
+
+            cafile = certifi.where()
+        os.environ["SSL_CERT_FILE"] = cafile
 
 except ImportError:
     # certifi not installed yet - this is expected during build when pip installs build dependencies
