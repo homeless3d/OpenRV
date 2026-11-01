@@ -84,6 +84,7 @@ One POSIX `sh` script replaces upstream's tcsh wrappers and serves every program
 | 6 | Desktop file, icons, `/usr/bin` links, licences, the packaging README as `/usr/share/doc/openrv/README.packaging.md` |
 | 7 | `closure.py --verify`: with an empty library path every `NEEDED` entry of every ELF must be found through its own RUNPATH inside the tree or be deny-listed; the build fails otherwise. Then the requires-exclude regex is generated |
 | 7b | **Mu precompile** (below) |
+| 7c | **Python bytecode** (below) |
 | 8 | `rpmbuild -bb openrv.spec` (payload prepared above; the spec only packs it; zstd level 19, `w19T0`) |
 
 ### Step 7b: precompiling Mu modules
@@ -99,21 +100,43 @@ makes Mu write `.muc` / `.mud` next to each source. Key properties (from the scr
   `.muc` of the other two segfaults rv.
 * Two passes: compile, then a fresh plain `rv` loads every `.muc` back. The build fails and lists any module whose
   `.muc` is missing or whose load did not return true, and fails if the step wrote any other file into the tree.
-* Needs a GL-capable display (the `offscreen` and `minimal` Qt platforms abort without a GL context). `MUC_DISPLAY=auto`
-  tries `xvfb-run`, a private `Xvfb -displayfd`, a private headless weston, the current session (a short-lived window
-  appears), else stops with install instructions. `MUC_TIMEOUT` (default 60 s) and `MUC_EXCLUDE` are configurable.
+* How it works in detail: the list of all `plugins/Mu/*.mu` is built, each module is loaded with `-eval` and
+  `runtime.load_module(...)` under `rv -noPrefs -debug compile`, and a signal file marks completion (rv's stdout is
+  buffered, so the log cannot be used). The second pass starts a fresh process and reloads every `.muc`. The build fails
+  if a `.muc` is missing, does not load, or any "compiled" / archive error appears. Result: **48 `.muc` + 28 `.mud`
+  from 51 `.mu`**. The three exclusions work from source.
+* Needs a GL-capable display. Selection order, overridable with `MUC_DISPLAY=auto|xvfb-run|xvfb|weston|session`:
+  1. `xvfb-run`;
+  2. a private `Xvfb -displayfd`;
+  3. a private headless `weston --backend=headless --renderer=gl` (own `XDG_RUNTIME_DIR`);
+  4. the current session `$DISPLAY` / `$WAYLAND_DISPLAY` (a window flashes briefly);
+  5. otherwise an error with a hint (`dnf install xorg-x11-server-Xvfb`, or install weston).
+
+  Modes 1-3 were tested with full builds; **mode 4 was not run on a real session**. Compiling with no display at all
+  is impossible: the Qt platforms `offscreen` / `minimal` abort (rc 134) and `mu-interp` lacks the `commands` module.
+  A headless `mutter` was evaluated but not implemented (it needs `dbus-run-session`).
+  `MUC_TIMEOUT` (default 60 s) and `MUC_EXCLUDE` are configurable.
 * Everything it starts is stopped by PID / process group; private directories are removed on exit.
+
+### Step 7c: Python bytecode
+
+`rpmbuild` rewrites file mtimes and `/opt` is root-owned, so the `.pyc` produced earlier in the build were stale
+(3932 of 3965 files) and rv compiled the Python side in memory at every start. Step 7c removes every `__pycache__` and
+runs `python3 -I -m compileall --invalidation-mode checked-hash` (with the bundled interpreter) over `lib/` and
+`plugins/`. Hash-checked `.pyc` stay valid whatever the mtimes. Python import time 749 ms -> 255 ms; the biggest
+single startup win ([03-startup-performance.md](03-startup-performance.md)). It must stay the last step that touches
+files in the tree.
 
 ## Requirements and invocation
 
 ```bash
 cd <project-root>        # the workspace containing build/stage and packaging/ (live copy)
-./packaging/build_rpm.sh # about 1 min without 7b; no sudo, nothing installed, nothing downloaded
+./packaging/build_rpm.sh # about 1 min before round 2; 7b and 7c add the time of two rv runs and a compileall; no sudo, nothing installed, nothing downloaded
 # committed copy, from a checkout:  OQ=$OQ wayland-fedora/packaging/build_rpm.sh
 ```
 
-Needs `rpmbuild`, `patchelf`, `magick` (ImageMagick), `rsync`, `zstd`, `python3`, and for step 7b `xvfb-run` or `Xvfb`
-(or weston, or a running session). Optional environment: `STAGE`, `VERSION`, `RELEASE`, `PATCHELF`, `MUC_DISPLAY`,
+Needs `rpmbuild`, `patchelf`, `magick` (ImageMagick), `rsync`, `zstd`, `python3` (the bundled one runs `compileall` in step 7c), and for step 7b one of `xvfb-run`, `Xvfb`
+or `weston` (or, as a last resort, a running session). Optional environment: `STAGE`, `VERSION`, `RELEASE`, `PATCHELF`, `MUC_DISPLAY`,
 `MUC_TIMEOUT`, `MUC_EXCLUDE`. Output: `packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm`
 (215 MB, 735 MB installed in the recorded run). Install is the user's step: `sudo dnf install ./...rpm`.
 

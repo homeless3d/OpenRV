@@ -93,7 +93,18 @@ hidden. Details: [04-packaging-rpm.md](04-packaging-rpm.md). The rpm is built lo
 Once installed, startup felt slow (about 3 s until idle). Profiling found Chromium being started on the main thread
 for a user-agent string, Mu sources recompiled on every launch, and a needless `certifi` import. Three commits
 (`43cb7f1`, `0495a0f`, `bd35652`) plus an rpm-time Mu precompile halved the time. See
-[03-startup-performance.md](03-startup-performance.md). A second round is in progress.
+[03-startup-performance.md](03-startup-performance.md).
+
+**Round 2.** More lazy imports (`opentimelineio`, `psutil`; `86f93c2`), a step 7b that precompiles every Mu module it
+can (48 `.muc`, with a verification pass in a fresh process and a way to run without touching the user's session:
+Xvfb or a private headless weston), and then the surprise: while checking what the installed tree still did at start,
+it turned out that **almost every `.pyc` in the rpm was stale** (3932 of 3965). `rpmbuild` changes mtimes, `/opt` is
+root-owned, so rv never trusted nor rewrote them and recompiled the whole Python side in memory at every launch. A
+final step 7c that builds hash-checked `.pyc` cut Python import time from 749 ms to 255 ms, more than all the other
+changes of the round. First frame went from 1.55 s to 0.99 s warm. Several ideas gave nothing and were dropped
+(prefetching, preload thread, prelink, AJADevices skip, QSS removal, GPU flags). Two crashes found on the way
+(`maya_tools` / `rvnuke_mode` `.muc` in a fresh process) were worked around by excluding those modules; the cause is
+unknown.
 
 ## Decision log (short)
 

@@ -69,36 +69,88 @@ that difference was done.
 Removing these would need either lazy-importing deeper into the Python packages or restructuring the link of `rv.bin`;
 neither was attempted.
 
-## Round 2 (in progress)
+## Round 2
 
-> **PLACEHOLDER. A second optimisation round is being worked on by another agent at the time of writing. No results
-> are recorded here yet and none must be assumed.**
+Second round, done after the first one above. Two kinds of change: Python and packaging details found with the same
+tools (import-time profile, per-file checks of the installed tree), and a rebuild of the packaging step that ships
+Mu bytecode. Commits: `86f93c2` (lazy `opentimelineio` and `psutil`), plus the rpm-recipe changes in
+[04-packaging-rpm.md](04-packaging-rpm.md) (steps 7b and 7c; the packaging copy is committed under
+`wayland-fedora/packaging/`).
 
-Planned items (from the task description; update this section with measured numbers when they land):
+### Findings
 
-* [ ] Precompile the **37 optional `.mu`** modules in addition to those loaded at start (the live build script's step
-  7b generates a `.muc` for every `plugins/Mu/*.mu` except a small exclude list; the workspace packaging README says
-  "48 `.muc` for 51 `.mu`", i.e. 51 minus the 3 excluded; how the figure 37 relates to that is unverified).
-* [ ] Make step 7b **robust when run headless** (needs a GL-capable display: `xvfb-run`, private Xvfb, private weston,
-  or the current session; verification pass that loads every `.muc` back in a fresh process).
-* [ ] **Parallelise startup** work where it is independent (what exactly was parallelised: TBD).
-* [ ] Python-side lazy imports in `otio_reader` and `session_manager` (uncommitted work in the tree: files
-  `src/plugins/rv-packages/otio_reader/otio_reader_plugin.py` and
-  `src/plugins/rv-packages/session_manager/local_thumbnail_gen.py` were modified but not committed when this was
-  written; their purpose is not documented yet).
-* [ ] Re-measure with the same methodology (interleaved, warm and cold) and fill in a table like the one above.
-* [ ] Sync the committed copy of `packaging/` (see [04-packaging-rpm.md](04-packaging-rpm.md)).
+| Finding | Evidence | Action |
+|---|---|---|
+| **Every `.pyc` in the rpm was stale.** `rpmbuild` changes file mtimes and `/opt` is root-owned, so rv could neither trust nor rewrite the `__pycache__` files: 3932 of 3965 files were out of date, and rv compiled the whole Python side in memory at every start | Python import time 749 ms -> 255 ms after the fix; this is the biggest single win of the round | Step 7c: remove all `__pycache__`, then `compileall --invalidation-mode checked-hash` with the bundled Python, after every other step that touches files |
+| `opentimelineio` imported at module load by `otio_reader_plugin.py` | ~175 ms of import time | Import on first use (`86f93c2`) |
+| `psutil` imported at module load by `local_thumbnail_gen.py` | ~37 ms | Import on first use (`86f93c2`) |
+| Optional Mu modes compiled on first activation | e.g. `annotate_mode`, `doc_browser`, `layer_select` | Step 7b now precompiles every `plugins/Mu/*.mu` that can be (48 `.muc` + 28 `.mud` from 51 `.mu`), see below |
+| Mu's `Module::load` (`src/lib/mu/Mu/Module.cpp`) writes a `.muc` only for modules actually loaded during a `-debug compile` run, and never compares mtime, size or hash | Reading the source; a readable `.muc` is used as is | The recipe loads every module explicitly; and a stale `.muc` wins over an edited `.mu`, so `.muc` are generated from the final tree |
+| `rvio` overlay scripts (frameburn, watermark, matte, bug, simpleslate) with and without `.muc` | JPG output byte-identical | Nothing to do; `.muc` is safe for them |
 
-### What already exists in the live packaging script (state when written)
+Commits `43cb7f1`, `0495a0f` and `bd35652` belong to round 1 and are described above.
 
-The workspace's `packaging/build_rpm.sh` (not yet in git) contains step 7b. Facts taken from its header comments:
+### Measurements
 
-* `rv -debug compile` writes `.muc` (and `.mud` docs) next to each `.mu` that is loaded during the run; an `-eval`
-  expression calls `runtime.load_module()` for every `plugins/Mu/*.mu` so that all of them are compiled.
-* Excluded by default (`MUC_EXCLUDE`): `external_ioprocess` (compiling it segfaults rv in
-  `Mu::Archive::Writer::freeze()`), `maya_tools` and `rvnuke_mode` (their `.muc` segfaults when loaded in a fresh rv,
-  the sources load fine).
-* Pass 1 compiles; pass 2 is a plain rv in a fresh process that loads every `.muc` back; the build fails if a module has
-  no loadable `.muc`, or if the step writes anything else into the tree.
-* The workspace packaging README states the result as 48 `.muc` (+ `.mud`) for 51 `.mu` (not independently re-run
-  for this document).
+Warm: n = 5; cold: n = 3; copies of the install tree on an NVMe disk; variants interleaved. "Before" = the rpm
+tree after round 1 (stale `.pyc`, step 7b only for the modules loaded at start); "After" = with `86f93c2`, step 7b
+for all modules and step 7c. Only measured with no arguments, i.e. **no media loaded**.
+
+| Measure | Before | After |
+|---|---|---|
+| Main window created | 0.655 s | 0.512 s |
+| First frame, warm | 1.550 s | 0.986 s |
+| First frame, cold | 1.888 s | 1.350 s |
+| Idle, warm | 1.81 s | 1.06 s |
+| Idle, cold | 1.95 s | 1.42 s |
+| CPU time per start | 1.6 s | 1.1 s |
+| Python import time | 749 ms | 255 ms |
+
+Combined from the original rpm (first frame 1.76 s in the first-round table) to now: about **0.99 s warm**.
+
+First activation of optional Mu modes with `.muc` (mean of 5):
+
+| Mode | Without `.muc` | With `.muc` |
+|---|---|---|
+| `annotate_mode` | 227 ms | 173 ms |
+| `doc_browser` | 920 ms | 876 ms (QtWebEngine dominates) |
+| `export_cuts` | 29 ms | 21 ms |
+| `layer_select` | 11 ms | 3 ms |
+
+Caveats:
+
+* Earlier **cold** numbers made with `posix_fadvise(DONTNEED)` were **unreliable** because the scratch directory was on
+  tmpfs (the call does nothing useful there). The cold numbers above are from NVMe copies; the round-1 cold numbers
+  (table above) used the earlier method and should be read with that in mind.
+* The gain of the `.pyc` fix and the gain of the lazy imports were **not separated** in the end-to-end numbers (the
+  import-time figure 749 -> 255 ms comes from the `.pyc` fix; the lazy imports save their ~0.2 s on top).
+* Startup **with media loaded** was not measured.
+
+### Tried and rejected (no gain)
+
+* Prefetching files from the wrapper (`cat` / `posix_fadvise(WILLNEED)`).
+* A PySide6 preload thread.
+* Skipping the AJADevices plugin (0 gain).
+* Removing the QSS (noise).
+* prelink / `-z now` (`ld.so` is only ~15 ms).
+* `--disable-gpu` / Vulkan flags for Chromium (~0.2 s only).
+* Running Python initialisation in another thread: not viable (GIL; PySide6, Mu and Python must run on the main
+  thread).
+
+### Not done
+
+* `multiprocessing` is imported because of `PyInterface.cpp` (50-95 ms); needs a C++ rebuild.
+* `from PySide6 import *` in `rv.qtutils` (~100 ms); removing it would change a public API of the RV Python modules.
+* Lazy loading of Mu modules, a thread pool for icon decoding, a fontconfig cache, splitting the package scan: not
+  evaluated.
+* `doc_browser.mu` is Mu and cannot call the Python user-agent setup, so it uses Chromium's default user agent without
+  the " RV/4.0.0" suffix (`webview2` sets it before creating its view). See [06-open-issues.md](06-open-issues.md).
+
+### Mu precompile in the rpm: what is known
+
+* `rv -debug compile` writes `.muc` (bytecode) and `.mud` (docs) next to each `.mu` loaded during the run.
+* Excluded on purpose (`MUC_EXCLUDE`): `external_ioprocess` (compiling it segfaults in `Archive::Writer::freeze`,
+  nothing loads it), `maya_tools` and `rvnuke_mode` (they compile, but loading their `.muc` in a new process segfaults;
+  **cause not found**). All three still work from source.
+* No display, no compile: the Qt platforms `offscreen` and `minimal` abort (rc 134) and `mu-interp` lacks the
+  `commands` module. Display selection is described in [04-packaging-rpm.md](04-packaging-rpm.md).

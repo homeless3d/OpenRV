@@ -75,6 +75,7 @@ exit 0
 /usr/bin/rvpkg
 /usr/share/applications/com.aswf.rv.desktop
 /usr/share/icons/hicolor/*/apps/openrv.png
+/usr/share/icons/hicolor/scalable/apps/openrv.svg
 
 %changelog
 * Thu Oct 29 2026 Claude <noreply@anthropic.com> - 4.0.0-0.wayland.qt6.1

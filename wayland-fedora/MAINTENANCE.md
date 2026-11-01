@@ -6,7 +6,7 @@ Everything here assumes the layout from the README: workspace `$OQ`, this reposi
 ## 0. Things that must stay true
 
 * Fork `main` == upstream `main`; never commit there. Work happens on `wayland-qt6` (or a dated successor, see 1).
-* The seven code commits stay small, one concern each; docs/scripts live only under `wayland-fedora/`.
+* The twelve code commits stay small, one concern each; docs/scripts live only under `wayland-fedora/`.
 * After any change to the code commits run `git format-patch` again (the update script does it) so `patches/` matches.
 * No binaries (rpm, build trees) in git. `packaging/.gitignore` already excludes `work/`, `out/`, `*.rpm`.
 
@@ -25,7 +25,7 @@ wayland-fedora/tools/update-from-upstream.sh            # fetch, dated branch, r
   ```bash
   B=$(git tag --list 'upstream-base-*' --sort=-creatordate | head -1)
   rm wayland-fedora/patches/0*.patch
-  git format-patch -o wayland-fedora/patches $B..HEAD -- . ':(exclude)wayland-fedora'
+  git format-patch --binary -o wayland-fedora/patches $B..HEAD -- . ':(exclude)wayland-fedora'
   git diff $B..HEAD -- . ':(exclude)wayland-fedora' > wayland-fedora/patches/source_patches.diff
   ```
 * Expect conflicts most likely in: `cmake/defaults/CY2026.cmake` (upstream bumps versions itself), `cmake/dependencies/python3.cmake`

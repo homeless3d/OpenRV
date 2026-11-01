@@ -1,0 +1,103 @@
+From 86f93c2b76c1e0ac45b0060422dc635669bee31c Mon Sep 17 00:00:00 2001
+From: homeless3d <homeless3d@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 16:51:10 +0100
+Subject: [PATCH 12/12] Defer opentimelineio and psutil imports until first use
+ (saves ~0.2 s of startup CPU)
+
+otio_reader_plugin imported opentimelineio, otio_reader and otio_writer at load time
+(~150-180 ms); local_thumbnail_gen imported psutil (~35 ms) only used when suspending
+a job. Both are now imported on first use; incoming_source_path skips the otio
+import for common media extensions.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ .../otio_reader/otio_reader_plugin.py         | 20 ++++++++++++++++---
+ .../session_manager/local_thumbnail_gen.py    |  5 ++++-
+ 2 files changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/src/plugins/rv-packages/otio_reader/otio_reader_plugin.py b/src/plugins/rv-packages/otio_reader/otio_reader_plugin.py
+index 93532e6..45886d8 100644
+--- a/src/plugins/rv-packages/otio_reader/otio_reader_plugin.py
++++ b/src/plugins/rv-packages/otio_reader/otio_reader_plugin.py
+@@ -33,10 +33,15 @@ import sys
+ from rv import commands, extra_commands
+ from rv import rvtypes
+ 
+-import opentimelineio as otio
++# opentimelineio (and the otio_reader / otio_writer modules built on it) cost
++# ~150 ms to import, so they are imported on first use rather than at startup.
+ 
+-import otio_reader
+-import otio_writer
++# Extensions of ordinary media that no OTIO adapter claims: skip the otio
++# import for them in incoming_source_path (a custom adapter is only consulted
++# for other extensions).
++_NON_OTIO_EXTS = frozenset(
++    "exr dpx cin tif tiff jpg jpeg png tga bmp hdr sgi rgb mov mp4 m4v mxf mkv avi webm mpg mpeg wav aif aiff mp3 m4a gto rv movieproc".split()
++)
+ 
+ 
+ class Mode(object):
+@@ -98,6 +103,11 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
+         if ext:
+             ext = ext[1:]
+ 
++        if ext.lower() in _NON_OTIO_EXTS:
++            return
++
++        import opentimelineio as otio
++
+         if ext in otio.adapters.suffixes_with_defined_adapters(read=True):
+             self.mode = Mode.loading
+             movieproc = "blank,otioFile={}.movieproc".format(in_path)
+@@ -155,6 +165,8 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
+         Exports the currently viewed node to the OTIO file from the event
+         """
+         event.reject()
++        import otio_writer
++
+         otio_writer.write_otio_file(commands.viewNode(), event.contents())
+ 
+     def expand_sources(self):
+@@ -189,6 +201,8 @@ class ExampleOTIOReaderPlugin(rvtypes.MinorMode):
+                     # the default views
+                     _remove_source_from_views(src_group)
+ 
++                    import otio_reader
++
+                     result = otio_reader.read_otio_file(path)
+                     commands.setViewNode(result)
+                     break
+diff --git a/src/plugins/rv-packages/session_manager/local_thumbnail_gen.py b/src/plugins/rv-packages/session_manager/local_thumbnail_gen.py
+index 49594b4..68cc711 100644
+--- a/src/plugins/rv-packages/session_manager/local_thumbnail_gen.py
++++ b/src/plugins/rv-packages/session_manager/local_thumbnail_gen.py
+@@ -2,7 +2,6 @@ import hashlib
+ import logging
+ import math
+ import os
+-import psutil
+ import shutil
+ import subprocess
+ import sys
+@@ -33,6 +32,8 @@ _IS_WIN32 = sys.platform == "win32"
+ 
+ 
+ def _suspend_proc(proc: subprocess.Popen) -> None:
++    import psutil  # lazy: ~35 ms, only needed when a thumbnail job is suspended
++
+     try:
+         psutil.Process(proc.pid).suspend()
+     except psutil.Error:
+@@ -40,6 +41,8 @@ def _suspend_proc(proc: subprocess.Popen) -> None:
+ 
+ 
+ def _resume_proc(proc: subprocess.Popen) -> None:
++    import psutil
++
+     try:
+         psutil.Process(proc.pid).resume()
+     except psutil.Error:
+-- 
+2.56.0
+

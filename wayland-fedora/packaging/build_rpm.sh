@@ -8,9 +8,9 @@
 set -euo pipefail
 
 PK=$(cd "$(dirname "$0")" && pwd)
-OQ=${OQ:-$(dirname "$PK")}               # workspace that contains build/stage (see ../BUILD_NOTES.md)
+OQ=$(dirname "$PK")
 STAGE=${STAGE:-$OQ/build/stage/app}          # the staged application tree (cmake --install result)
-SRC=${SRC:-$(cd "$PK/../.." && pwd)}   # OpenRV source tree = root of this repository
+SRC=$OQ/src
 WORK=$PK/work
 ROOT=$WORK/root                              # becomes the rpm payload
 APP=$ROOT/opt/openrv
@@ -214,23 +214,13 @@ mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/license
 for n in rv rvio rvpush rvls rvpkg; do ln -s /opt/openrv/bin/$n "$ROOT/usr/bin/$n"; done
 ln -s /opt/openrv/bin/rv "$ROOT/usr/bin/openrv"     # alias: Fedora's kernel-tools 'rv' package also owns /usr/bin/rv
 install -m 644 "$PK/com.aswf.rv.desktop" "$ROOT/usr/share/applications/com.aswf.rv.desktop"
-ICO=$SRC/src/bin/apps/rv/RV.ico
+SVG=$SRC/src/bin/apps/rv/RV.svg
 H=$ROOT/usr/share/icons/hicolor
-for i in 0:16 1:24 2:32 3:48 4:64 6:128 7:256; do
-    mkdir -p "$H/${i#*:}x${i#*:}/apps"
-    magick "$ICO[${i%%:*}]" -strip "PNG32:$H/${i#*:}x${i#*:}/apps/openrv.png"
+for n in 16 24 32 48 64 128 256 512; do
+    mkdir -p "$H/${n}x${n}/apps"
+    magick -background none -density $((n * 96 / 400 + 1)) "$SVG" -resize ${n}x${n} -strip "PNG32:$H/${n}x${n}/apps/openrv.png"
 done
-# 512x512 from the macOS icon (the OpenRV tree's RV.icns holds PNG 'ic09')
-python3 -I - "$SRC/src/bin/nsapps/RV/RV.icns" "$H" <<'PYEOF'
-import struct, sys, os
-d = open(sys.argv[1], 'rb').read(); i = 8
-while i < len(d):
-    t, l = d[i:i+4], struct.unpack('>I', d[i+4:i+8])[0]
-    if t == b'ic09':
-        os.makedirs(sys.argv[2] + '/512x512/apps', exist_ok=True)
-        open(sys.argv[2] + '/512x512/apps/openrv.png', 'wb').write(d[i+8:i+l])
-    i += l
-PYEOF
+mkdir -p "$H/scalable/apps"; install -m 644 "$SVG" "$H/scalable/apps/openrv.svg"
 cp "$SRC/LICENSE" "$ROOT/usr/share/licenses/openrv/LICENSE" 2>/dev/null || true
 cp "$SRC/Notice.txt" "$SRC/THIRD-PARTY.md" "$ROOT/usr/share/licenses/openrv/"
 cp "$PK/BUNDLED-QT-NOTE.txt" "$ROOT/usr/share/licenses/openrv/"
@@ -254,6 +244,185 @@ alt = '|'.join(sorted(re.escape(n).replace('\\+', '[+]') for n in names))
 open(out, 'w').write('^/|^(' + alt + ')([(]|$)')
 print('requires filter: %d bundled sonames' % len(names))
 PYEOF
+
+# ---------------------------------------------------------------- 7b. precompiled Mu modules (.muc / .mud)
+# rv compiles every Mu module from source at each start and again whenever an optional package mode is switched
+# on (session_manager, annotate, doc_browser, ...). With "-debug compile" Mu writes the compiled .muc (and the .mud
+# doc) next to the .mu file; /opt/openrv is read-only for users, so they must be shipped. There is NO staleness
+# check in Mu: a .muc silently wins over an edited .mu, hence they are generated here from the final tree, never in
+# build/stage. A module only gets a .muc when it is actually loaded during that run, so after the normal startup an
+# "-eval" expression (it runs last, once the session is up) does runtime.load_module() on EVERY plugins/Mu/*.mu found
+# in the tree (list generated here, new packages are covered automatically) and writes one result line per module
+# plus a sentinel line to a file in the private HOME (rv's stdout is block-buffered when redirected and the installed
+# launcher drops LD_PRELOAD, so stdbuf cannot help); that file is polled (no guessing with file counts). Expected set = every .mu minus MUC_EXCLUDE; the build fails and lists
+# the modules whose .muc is missing or whose load did not return true.
+# MUC_EXCLUDE (default "external_ioprocess maya_tools rvnuke_mode"), all verified in rv 4.0.0 / this tree:
+#   external_ioprocess  compiling it makes rv SEGFAULT in Mu::Archive::Writer::freeze() (upstream Mu bug; nothing loads
+#                       it, the ExternalProcess users use external_qprocess); the crash leaves a truncated .muc.
+#   maya_tools          compiles, but loading its .muc in a fresh rv SEGFAULTS (the source loads fine).
+#   rvnuke_mode         same (its source also has an unresolved call, "menuItem" at line 2014, that Mu only reports).
+# Two passes therefore run: pass 1 "-debug compile" writes the .muc; pass 2 is a plain rv (no compile) in a FRESH
+# process that loads every .muc, so a .muc that cannot be loaded back fails the build instead of shipping. Verified: rvio (-overlay frameburn/watermark/matte/bug, -leader simpleslate) loads these same .muc
+# and renders byte-identical frames, so rv-compiled overlay scripts are safe to ship.
+# Display: rv needs a GL-capable display (Qt "offscreen"/"minimal" abort without a GL context; mu-interp cannot be
+# used, the "commands" module only exists inside rv). MUC_DISPLAY=auto|xvfb-run|xvfb|weston|session picks it; auto =
+#   1. xvfb-run (xorg-x11-server-Xvfb)        2. private Xvfb on a free display number (-displayfd)
+#   3. private headless weston (--backend=headless --renderer=gl, own socket in a private XDG_RUNTIME_DIR)
+#   4. the current $DISPLAY / $WAYLAND_DISPLAY (a short-lived rv window appears)       5. error with instructions.
+# Everything started here is stopped by PID / process group.
+log "7b. precompile the Mu modules (rv -debug compile -eval 'load every module', headless)"
+MUC_DISPLAY=${MUC_DISPLAY:-auto}
+MUC_EXCLUDE=${MUC_EXCLUDE-external_ioprocess maya_tools rvnuke_mode}
+MUC_TIMEOUT=${MUC_TIMEOUT:-60}
+GENHOME=$(mktemp -d "${TMPDIR:-/tmp}/openrv-muc-home.XXXXXX")
+GENPID=; MUC_BG=(); MUC_DIRS=("$GENHOME"); GENX=(); GENENV=()
+( cd "$APP" && find . | sort ) > "$WORK/tree-before-muc.txt"
+
+muc_stop_rv() {    # the rv process group, then anything still running from the tree
+    local p e
+    if [ -n "$GENPID" ]; then
+        kill -TERM -- -"$GENPID" 2>/dev/null || true; sleep 1; kill -KILL -- -"$GENPID" 2>/dev/null || true
+        wait "$GENPID" 2>/dev/null || true; GENPID=
+    fi
+    for p in /proc/[0-9]*; do
+        e=$(readlink "$p/exe" 2>/dev/null || true)
+        case $e in "$APP"/*) kill -KILL "${p#/proc/}" 2>/dev/null || true;; esac
+    done
+}
+muc_stop() {       # idempotent: rv, then the display servers started below, then the private directories
+    local p
+    muc_stop_rv
+    for p in "${MUC_BG[@]}"; do
+        pkill -TERM -P "$p" 2>/dev/null || true         # children of weston (desktop-shell, keyboard)
+        kill -TERM "$p" 2>/dev/null || true; sleep 0.5; kill -KILL "$p" 2>/dev/null || true
+        wait "$p" 2>/dev/null || true
+    done
+    MUC_BG=()
+    if [ "${#MUC_DIRS[@]}" -gt 0 ]; then rm -rf "${MUC_DIRS[@]}"; MUC_DIRS=(); fi
+}
+trap muc_stop EXIT
+
+muc_display_xvfbrun() {
+    command -v xvfb-run >/dev/null || return 1
+    GENX=(xvfb-run -a -s "-screen 0 1280x720x24 +extension GLX")
+    GENENV=(-u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb)
+}
+muc_display_xvfb() {
+    command -v Xvfb >/dev/null || return 1
+    local f=$GENHOME/displayfd i
+    : > "$f"
+    Xvfb -displayfd 3 -screen 0 1280x720x24 +extension GLX -nolisten tcp 3>"$f" > "$WORK/muc-xvfb.log" 2>&1 &
+    MUC_BG+=($!)
+    for i in $(seq 100); do [ -s "$f" ] && break; kill -0 "$!" 2>/dev/null || break; sleep 0.1; done
+    [ -s "$f" ] || { echo "Xvfb did not report a display number, see $WORK/muc-xvfb.log" >&2; return 1; }
+    GENX=(); GENENV=(-u WAYLAND_DISPLAY DISPLAY=":$(head -n1 "$f")" QT_QPA_PLATFORM=xcb)
+}
+muc_display_weston() {
+    command -v weston >/dev/null || return 1
+    local d i
+    d=$(mktemp -d /tmp/openrv-wl.XXXXXX); chmod 700 "$d"     # short path: a wayland socket path is limited to ~100 chars
+    MUC_DIRS+=("$d")
+    XDG_RUNTIME_DIR=$d weston --backend=headless --renderer=gl --socket=openrv-muc --no-config \
+        --width=1280 --height=720 > "$WORK/muc-weston.log" 2>&1 &
+    MUC_BG+=($!)
+    for i in $(seq 100); do [ -S "$d/openrv-muc" ] && break; kill -0 "$!" 2>/dev/null || break; sleep 0.1; done
+    [ -S "$d/openrv-muc" ] || { echo "weston (headless, gl renderer) did not start, see $WORK/muc-weston.log" >&2; return 1; }
+    GENX=(); GENENV=(-u DISPLAY XDG_RUNTIME_DIR="$d" WAYLAND_DISPLAY=openrv-muc QT_QPA_PLATFORM=wayland)
+}
+muc_display_session() {
+    if [ -n "${DISPLAY:-}" ]; then
+        echo "warning: using the current X display $DISPLAY, a short-lived rv window will appear"
+        GENX=(); GENENV=(-u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb)
+    elif [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        echo "warning: using the current Wayland display $WAYLAND_DISPLAY, a short-lived rv window will appear"
+        GENX=(); GENENV=(QT_QPA_PLATFORM=wayland)
+    else return 1; fi
+}
+muc_pick_display() {
+    local m
+    case $MUC_DISPLAY in
+        auto) for m in xvfbrun xvfb weston session; do
+                  if "muc_display_$m"; then echo "Mu precompile display: ${m/xvfbrun/xvfb-run}"; return 0; fi
+              done ;;
+        xvfb-run) muc_display_xvfbrun && { echo "Mu precompile display: xvfb-run"; return 0; } ;;
+        xvfb|weston|session) "muc_display_$MUC_DISPLAY" && { echo "Mu precompile display: $MUC_DISPLAY"; return 0; } ;;
+        *) echo "ERROR: MUC_DISPLAY must be auto|xvfb-run|xvfb|weston|session (got '$MUC_DISPLAY')" >&2; exit 1 ;;
+    esac
+    cat >&2 <<'MSG'
+ERROR: no display available to precompile the Mu modules (rv needs a GL-capable display; QT_QPA_PLATFORM=offscreen
+       and minimal abort without a GL context). Install one of these (no desktop session needed), then re-run:
+         sudo dnf install xorg-x11-server-Xvfb      # provides xvfb-run and Xvfb (preferred)
+         sudo dnf install weston                    # private headless Wayland compositor (GL renderer)
+       or run from inside a graphical session (a short-lived rv window appears): MUC_DISPLAY=session
+MSG
+    exit 1
+}
+muc_pick_display
+
+# eval: load every module, one result line each into $MUC_RES, sentinel last, then close (= flush) the file
+MUC_RES=$GENHOME/muc-result.txt
+MUC_ALL=$(cd "$APP/plugins/Mu" && ls -- *.mu | sed 's/\.mu$//' | LC_ALL=C sort)
+MUC_EXPECT=$(printf '%s\n' $MUC_ALL | grep -vxF -f <(printf '%s\n' $MUC_EXCLUDE | grep . || echo '#none#') || true)
+muc_run() {        # muc_run LOGNAME [extra rv args]: fresh rv, eval loads all, polls the result file for the sentinel
+    local name=$1; shift
+    rm -f "$MUC_RES"
+    setsid env "${GENENV[@]}" HOME="$GENHOME" RV_HOME="$APP" \
+        "${GENX[@]}" "$APP/bin/rv" -noPrefs "$@" -eval "$MUC_EV" > "$WORK/$name.log" 2>&1 &
+    GENPID=$!
+    for _ in $(seq "$MUC_TIMEOUT"); do
+        sleep 1
+        grep -qs '^OPENRV-MUC-DONE' "$MUC_RES" && break
+        kill -0 "$GENPID" 2>/dev/null || break
+    done
+    cp "$MUC_RES" "$WORK/$name.result" 2>/dev/null || : > "$WORK/$name.result"
+    muc_stop_rv
+}
+MUC_EV="use runtime; use io; ofstream o = ofstream(\"$MUC_RES\");"
+for m in $MUC_EXPECT; do
+    MUC_EV+=" try { print(o, \"MUC-LOAD $m \" + string(runtime.load_module(\"$m\")) + \"\\n\"); flush(o); } catch (...) { print(o, \"MUC-LOAD $m EXC\\n\"); flush(o); }"
+done
+MUC_EV+=' print(o, "OPENRV-MUC-DONE\n"); o.close();'
+muc_run muc-gen -debug compile                 # pass 1: compile
+cp "$WORK/muc-gen.result" "$WORK/muc-result.txt"
+muc_run muc-check                              # pass 2: load every .muc back, no compile
+muc_stop
+trap - EXIT
+rmdir "$APP/resources/locales" 2>/dev/null || true       # re-created (empty) by QtWebEngine
+
+n=$(find "$APP/plugins/Mu" -maxdepth 1 -name '*.muc' | wc -l)
+nexp=$(printf '%s\n' $MUC_EXPECT | grep -c .)
+echo "$n .muc and $(find "$APP/plugins/Mu" -maxdepth 1 -name '*.mud' | wc -l) .mud files in plugins/Mu (expected $nexp .muc = $(printf '%s\n' $MUC_ALL | grep -c .) .mu minus excluded: ${MUC_EXCLUDE:-none})"
+bad=
+for pass in muc-gen muc-check; do
+    grep -q '^OPENRV-MUC-DONE' "$WORK/$pass.result" || bad+=" ($pass: rv did not reach the sentinel within ${MUC_TIMEOUT}s or crashed)"
+    first=1
+    for m in $MUC_EXPECT; do      # modules load in this order: the first one without a result line is where rv died
+        if grep -q "^MUC-LOAD $m true\$" "$WORK/$pass.result"; then continue
+        elif grep -q "^MUC-LOAD $m " "$WORK/$pass.result"; then bad+=" $m($pass: load returned false/exception)"
+        elif [ "$first" = 1 ]; then bad+=" $m($pass: rv died or hung at/after this module -- add it to MUC_EXCLUDE?)"; first=0
+        fi
+    done
+done
+for m in $MUC_EXPECT; do [ -s "$APP/plugins/Mu/$m.muc" ] || bad+=" $m(no .muc)"; done
+for m in $MUC_EXCLUDE; do rm -f "$APP/plugins/Mu/$m.muc" "$APP/plugins/Mu/$m.mud"; done
+grep -E 'Unable to open output|failed to load muc|archive format|INFO: compiled' "$WORK/muc-check.log" && bad+=" (muc-check pass compiled or failed to read a .muc)"
+grep -E 'Unable to open output|failed to load muc|archive format' "$WORK/muc-gen.log" && bad+=" (muc write/read errors in log)"
+if [ -n "$bad" ]; then echo "ERROR: Mu precompile incomplete:$bad -- see $WORK/muc-gen.log, $WORK/muc-check.log" >&2; exit 1; fi
+grep -E '^(ERROR|.*Unresolved function)' "$WORK/muc-gen.log" | grep -v 'NV-GLX' | sed 's/^/note (source problem in the module itself, not caused by precompiling): /' || true
+( cd "$APP" && find . | sort ) > "$WORK/tree-after-muc.txt"
+extra=$(diff "$WORK/tree-before-muc.txt" "$WORK/tree-after-muc.txt" | grep '^>' | grep -v -E '^> \./plugins/Mu/[^/]+\.mu[cd]$' || true)
+if [ -n "$extra" ]; then echo "ERROR: the Mu precompile step wrote other files into the tree:" >&2; echo "$extra" >&2; exit 1; fi
+chmod -R u+rwX,go+rX "$APP"
+
+# ---------------------------------------------------------------- 7c. Python bytecode that stays valid after packaging
+# The stage's .pyc files are timestamp-based (they record the .py mtime), but rpmbuild clamps every file mtime, so in
+# the installed tree EVERY .pyc was stale; /opt is root-owned so rv could not rewrite them and recompiled every
+# module it imported (stdlib, PySide6, plugins) at each start. Hash-based .pyc (checked: validated against the
+# source's content hash, independent of mtime) survive the clamp.
+log "7c. hash-based bytecode for the bundled Python tree"
+find "$APP" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
+"$APP/bin/python3" -I -m compileall -q -f -j 0 --invalidation-mode checked-hash "$APP/lib" "$APP/plugins" >"$WORK/pyc.log" 2>&1 || true
+echo "    $(find "$APP" -name '*.pyc' | wc -l) .pyc written (compile errors, if any, in $WORK/pyc.log)"
 
 # ---------------------------------------------------------------- 8. rpmbuild
 log "8. rpmbuild"

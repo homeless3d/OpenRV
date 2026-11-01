@@ -1,0 +1,95 @@
+From 0495a0f23f6761d658e83e6805a722d5613f0549 Mon Sep 17 00:00:00 2001
+From: homeless3d <homeless3d@users.noreply.github.com>
+Date: Sun, 1 Nov 2026 14:52:03 +0100
+Subject: [PATCH 10/12] rv.runtime: start Qt WebEngine lazily, on the first web
+ view
+
+Importing QWebEngineProfile and touching defaultProfile() starts Chromium
+(about 1.5 s of CPU and the QtWebEngineProcess children) at every startup,
+even when no web view is ever shown. setup_webview_default_profile() now
+imports PySide lazily, is idempotent and is scheduled by nobody; the
+webview2 package calls it right before creating its QWebEngineView.
+The Mu doc_browser cannot call it and uses Chromium's default user agent.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+---
+ src/lib/app/py_rvui/rv/runtime.py            | 40 ++++++++++----------
+ src/plugins/rv-packages/webview2/webview2.py |  2 +
+ 2 files changed, 21 insertions(+), 21 deletions(-)
+
+diff --git a/src/lib/app/py_rvui/rv/runtime.py b/src/lib/app/py_rvui/rv/runtime.py
+index 44bd1f1..5a05272 100644
+--- a/src/lib/app/py_rvui/rv/runtime.py
++++ b/src/lib/app/py_rvui/rv/runtime.py
+@@ -10,29 +10,27 @@ def __dummy__():
+     pass
+ 
+ 
+-def setup_webview_default_profile():
+-    default_profile = QWebEngineProfile.defaultProfile()
+-    user_agent = default_profile.httpUserAgent() + " RV/" + os.environ["TWK_APP_VERSION"]
+-    default_profile.setHttpUserAgent(user_agent)
++# QWebEngineProfile.defaultProfile() initialises Chromium (about a second on the main
++# thread, plus the QtWebEngineProcess children), so nothing is imported or scheduled at
++# module import time: Chromium only starts when the first web view is created. Code that
++# creates a QWebEngineView/QWebEnginePage calls this right before doing so, so that the
++# profile user agent carries the " RV/<version>" suffix.
++_web_profile_ready = False
+ 
+ 
+-try:
+-    from PySide2.QtWebEngineWidgets import QWebEngineProfile
+-except ImportError:
++def setup_webview_default_profile():
++    global _web_profile_ready
++    if _web_profile_ready:
++        return
+     try:
+-        from PySide6.QtWebEngineCore import QWebEngineProfile
++        from PySide2.QtWebEngineWidgets import QWebEngineProfile
+     except ImportError:
+-        pass
++        try:
++            from PySide6.QtWebEngineCore import QWebEngineProfile
++        except ImportError:
++            return
+ 
+-# QWebEngineProfile.defaultProfile() initialises Chromium (about a second on the main thread).
+-# Nothing needs the user agent before the event loop runs (web views are created on demand),
+-# so do it shortly after the first window is up instead of delaying it.
+-try:
+-    from PySide6.QtCore import QTimer
+-except ImportError:
+-    QTimer = None
+-
+-if QTimer is not None:
+-    QTimer.singleShot(600, setup_webview_default_profile)
+-else:
+-    setup_webview_default_profile()
++    _web_profile_ready = True
++    default_profile = QWebEngineProfile.defaultProfile()
++    user_agent = default_profile.httpUserAgent() + " RV/" + os.environ["TWK_APP_VERSION"]
++    default_profile.setHttpUserAgent(user_agent)
+diff --git a/src/plugins/rv-packages/webview2/webview2.py b/src/plugins/rv-packages/webview2/webview2.py
+index 354ef7e..17a0dda 100644
+--- a/src/plugins/rv-packages/webview2/webview2.py
++++ b/src/plugins/rv-packages/webview2/webview2.py
+@@ -10,6 +10,7 @@ import os
+ 
+ from rv import rvtypes
+ from rv import qtutils
++import rv.runtime
+ 
+ try:
+     from PySide2 import QtCore
+@@ -50,6 +51,7 @@ class WebView2(rvtypes.MinorMode):
+         self.dock_widget = QDockWidget("Chromium Doc Widget", self.window)
+         self.window.addDockWidget(QtCore.Qt.BottomDockWidgetArea, self.dock_widget)
+ 
++        rv.runtime.setup_webview_default_profile()
+         self.webview = QtWebEngineWidgets.QWebEngineView()
+         self.webview.setMaximumHeight(140)
+         self.dock_widget.setWidget(self.webview)
+-- 
+2.56.0
+

@@ -1,7 +1,7 @@
 From 4dd29f5ccb51992eb1e6a9de00e6500fb9244ba1 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 29 Oct 2026 18:39:33 +0100
-Subject: [PATCH 3/7] GLWindow: keep viewport drags (timeline scrub) going
+Subject: [PATCH 03/12] GLWindow: keep viewport drags (timeline scrub) going
  outside the viewport on Wayland
 
 On X11 a button pressed in the viewport grabs the pointer implicitly, so a

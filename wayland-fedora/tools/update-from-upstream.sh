@@ -79,7 +79,7 @@ if [ $PATCHES = 1 ] && [ ${#OK[@]} -gt 0 ]; then
   PD=wayland-fedora/patches
   if [ -d wayland-fedora ]; then
     mkdir -p $PD; rm -f $PD/0*.patch $PD/source_patches.diff
-    git format-patch -q -o $PD "$NEWBASE..HEAD" -- . ':(exclude)wayland-fedora' >/dev/null
+    git format-patch -q --binary -o $PD "$NEWBASE..HEAD" -- . ':(exclude)wayland-fedora' >/dev/null
     git diff "$NEWBASE..HEAD" -- . ':(exclude)wayland-fedora' > $PD/source_patches.diff
     git add -A $PD
     git commit -q -m "wayland-fedora: regenerate patches against upstream $SHORT

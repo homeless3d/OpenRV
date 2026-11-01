@@ -1,7 +1,7 @@
 From ac12806129cb066f1d7ef97c04b011eac835cd36 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 29 Oct 2026 19:09:04 +0100
-Subject: [PATCH 6/7] Linux: use the original (legacy) gradient QSS; size
+Subject: [PATCH 06/12] Linux: use the original (legacy) gradient QSS; size
  window incl. menubar on Qt6
 
 - RvCommon/CMakeLists.txt: on Linux compile rv_linux_dark_legacy.qss as rv_linux_dark (original gradient toolbars/black separators); Windows keeps the flat theme.

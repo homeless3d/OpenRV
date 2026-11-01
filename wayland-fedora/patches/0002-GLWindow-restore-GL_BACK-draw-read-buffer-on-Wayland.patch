@@ -1,8 +1,8 @@
 From 972e5591117b4bab622ead3619e0e3f44ba25657 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 29 Oct 2026 17:50:28 +0100
-Subject: [PATCH 2/7] GLWindow: restore GL_BACK draw/read buffer on Wayland so
- the viewport draws
+Subject: [PATCH 02/12] GLWindow: restore GL_BACK draw/read buffer on Wayland
+ so the viewport draws
 
 On Wayland RV makes the viewport window's context current before the
 window surface exists (QTGLVideoDevice::makeCurrent during startup), which

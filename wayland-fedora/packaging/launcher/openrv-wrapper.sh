@@ -31,6 +31,9 @@ fi
 # GNOME-style client side decoration (libadwaita look), shipped in plugins/Qt/wayland-decoration-client
 : "${QT_WAYLAND_DECORATION=adwaita}"; export QT_WAYLAND_DECORATION
 
+# Crashpad is not shipped (space); without this switch rv prints "Crashpad handler not found" errors.
+: "${RV_CRASH_DUMPS_ENABLED=0}"; export RV_CRASH_DUMPS_ENABLED
+
 # Upstream's wrapper does this for the GUI ("LANG causes problems when set to interesting values")
 [ "$name" = rv ] && unset LANG
 

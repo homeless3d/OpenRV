@@ -1,7 +1,7 @@
 # OpenRV (Qt 6.11.2 / Wayland) as a self-contained rpm
 
-`wayland-fedora/packaging/` turns the staged OpenRV build (`build/stage/app`, native Wayland, Qt 6.11.2) into
-`wayland-fedora/packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm`.
+`packaging/` turns the staged OpenRV build (`build/stage/app`, native Wayland, Qt 6.11.2) into
+`packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm`.
 The package carries its own Qt 6.11.2 (QtWebEngine, plugins, PySide6, ...) and everything Qt/RV need that is not
 part of the base OS, so a later Fedora with a different Qt (or a different ICU, FFmpeg, libxkbcommon, ...) cannot
 break it. Only the C library, the C++ runtime and the GPU / Wayland / X11 / D-Bus / audio / font stack of the host
@@ -9,7 +9,7 @@ are used from the system (list below). Size: 215 MB rpm (zstd level 19), 735 MB 
 
 ## Install / uninstall (you run these, the build never does)
 
-    sudo dnf install ./wayland-fedora/packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm
+    sudo dnf install ./packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm
     rv movie.mp4            # or: openrv, or the "OpenRV" launcher in the GNOME grid
     sudo dnf remove openrv
 
@@ -20,8 +20,9 @@ declares `Conflicts: rv`; `/usr/bin/openrv` never conflicts.
 
 ## Rebuild (no sudo, nothing installed, nothing downloaded)
 
-    cd $OQ   # workspace containing build/stage, see ../BUILD_NOTES.md
-    ./wayland-fedora/packaging/build_rpm.sh         # ~1 min; needs rpmbuild, patchelf, magick, rsync, zstd, python3
+    cd <project-root>
+    ./packaging/build_rpm.sh            # ~1 min; needs rpmbuild, patchelf, magick, rsync, zstd, python3 (+ its compileall module)
+    # and, for step 7b, one of xvfb-run / Xvfb / weston (or a running session)
 
 Optional environment: `STAGE=` (staged tree), `VERSION=`, `RELEASE=`, `PATCHELF=`.
 The Qt/Chromium libraries are copied from the **host at build time** (`/usr/lib64`, `/usr/lib64/qt6`,
@@ -43,7 +44,34 @@ Steps of `build_rpm.sh`:
 6. Desktop file, icons (from `src/src/bin/apps/rv/RV.ico` and `RV.icns` of the OpenRV tree), `/usr/bin` links, licenses.
 7. `closure.py --verify`: every NEEDED entry of every ELF must be found through its own RUNPATH inside the tree or be
    deny-listed (`work/system-libs.txt` = the runtime system list); the build fails otherwise.
+   7b. Precompile the Mu modules (needs a display, see below): `rv -debug compile -eval ...` loads every
+   `plugins/Mu/*.mu` of the tree and writes `.muc`/`.mud` next to it, so startup and the first activation of an
+   optional mode (annotate, session_manager, doc_browser, ...) no longer compile Mu source. Expected set = every `.mu`
+   minus `MUC_EXCLUDE` (default `external_ioprocess maya_tools rvnuke_mode`: compiling the first crashes rv, loading
+   the other two `.muc` crashes rv, their sources load fine). A second, plain rv then loads every `.muc` back in a
+   fresh process; the build fails and lists any module without a loadable `.muc`, and fails if the step writes
+   anything else into the tree. Result: 48 `.muc` (+ `.mud`) for 51 `.mu`.
+   7c. Python bytecode: rpmbuild changes file mtimes and `/opt` is root-owned, so the `.pyc` compiled earlier were
+   stale (3932 of 3965 files) and rv recompiled the whole Python side in memory at every start. The step removes all
+   `__pycache__` and runs `compileall --invalidation-mode checked-hash` with the bundled Python, so the `.pyc` stay
+   valid whatever the mtimes. Python import time at start: 749 ms -> 255 ms (the biggest startup win).
 8. `rpmbuild -bb openrv.spec` (the payload is prepared above; the spec only packs it).
+
+## Display needed by the Mu precompile step (7b)
+
+`rv` needs a GL-capable display even to compile Mu (`QT_QPA_PLATFORM=offscreen` and `minimal` abort without a GL
+context, and `mu-interp` cannot load the rv modules because the `commands` module only exists inside rv). The step
+picks one, in this order, and stops everything it started by PID / process group:
+
+1. `xvfb-run` (Fedora: `sudo dnf install xorg-x11-server-Xvfb`, which provides both `xvfb-run` and `Xvfb`)
+2. a private `Xvfb -displayfd` on a free display number (no `xvfb-run` needed)
+3. a private headless `weston --backend=headless --renderer=gl` (own socket in a private `XDG_RUNTIME_DIR` under `/tmp`)
+4. the current `$DISPLAY` / `$WAYLAND_DISPLAY`: works, but a short-lived rv window appears
+5. otherwise the build stops with instructions (install Xvfb or weston).
+
+`MUC_DISPLAY=auto|xvfb-run|xvfb|weston|session` forces one (default `auto`); `MUC_TIMEOUT=` (seconds, default 60) and
+`MUC_EXCLUDE=` (space separated module names) are also honoured. Logs: `work/muc-gen.log`, `work/muc-result.txt`
+(one line per module), `work/muc-xvfb.log`, `work/muc-weston.log`.
 
 ## Slimming (nothing for debugging, testing or building is shipped)
 
@@ -55,7 +83,7 @@ Before: 347 MB rpm (zstd 10), 1222 MB installed. After: **215 MB rpm (zstd 19, `
   runs normally; crash dumps are simply not written), `dump_syms`, `minidump_*`, `symbolicate_crash.sh`, all `*Test` programs, `rvprof`, `makeFBIOformats`,
   `makeMovieIOformats`, `rvio_sw`, static libs, headers, cmake/pkgconfig files, Qt tools (moc, rcc, uic ...).
 * Python: stdlib `test/`, idlelib, tkinter, turtledemo, ensurepip, lib2to3, `_test*`/`xx*` extension modules, pip, setuptools, wheel, Cython, meson,
-  ninja, `tests` dirs, `.pyi` stubs, PySide6 docs/typesystems/scripts. `__pycache__` (compiled once at build time) is kept: it shortens startup.
+  ninja, `tests` dirs, `.pyi` stubs, PySide6 docs/typesystems/scripts. `__pycache__` is rebuilt as hash-checked `.pyc` in step 7c (it shortens startup).
 * PySide6 modules nothing in RV imports (RV's Python only uses Core, Gui, Widgets, UiTools, WebEngine*): Designer, Help, Pdf, PdfWidgets,
   QuickControls2, QuickTest, SpatialAudio, Sql, WebSockets, WebEngineQuick. Their Qt libraries (Designer, Help, Sql, ...) drop out of the closure automatically (135 instead of 147 libraries copied).
 * WebEngine: DevTools resources pak; locale paks except en-US, es, es-419; Qt translations except `qt_es`/`qtbase_es`.
@@ -121,10 +149,10 @@ as provides. This yields versioned `libc.so.6(GLIBC_2.43)`, `libstdc++.so.6(GLIB
   Defaults: `QT_QPA_PLATFORM=wayland;xcb` when `WAYLAND_DISPLAY` or `$XDG_RUNTIME_DIR/wayland-0` exists, `xcb` otherwise (export it to
   override), `QT_WAYLAND_DECORATION=adwaita`; like upstream's wrapper, `rv` unsets `LANG`.
 * Desktop: `com.aswf.rv.desktop`. RV's Wayland `xdg_toplevel.set_app_id` is `com.aswf.rv` (captured with `WAYLAND_DEBUG=1`,
-  local capture), so file name and `StartupWMClass` match it and GNOME shows the `openrv` icon in the dock. `%post/%postun`
+  `evidence/app_id.txt`), so file name and `StartupWMClass` match it and GNOME shows the `openrv` icon in the dock. `%post/%postun`
   refresh the desktop/icon caches only if the tools exist and never fail.
 
-## Verification performed (logs, /proc maps and screenshots were captured locally; they are not part of the repository)
+## Verification performed (evidence in `packaging/evidence/`)
 
 Run on the rpm built here, extracted privately (`rpm2cpio | cpio`; also `rpm --root` inside `unshare -r`), with a scrubbed environment
 (`env -i HOME XDG_RUNTIME_DIR WAYLAND_DISPLAY [DISPLAY]`) on private compositors (weston headless, Xvfb); the real GNOME session was not used.
@@ -133,9 +161,9 @@ Run on the rpm built here, extracted privately (`rpm2cpio | cpio`; also `rpm --r
   `test/classify_maps.py` sorts every mapped path outside the package into deny-listed system lib / private dependency of such a lib /
   GPU driver payload / data; anything else is a violation (exit 1). Result: 0 violations; no host libQt6*, libav*, libicu*, nss, xkbcommon ...
 * `test/hide_system_libs.sh` (unprivileged user+mount namespace): `/usr/lib64` becomes a symlink farm without any host Qt6, ICU, FFmpeg,
-  NSS, xkbcommon, xcb-util, webp, abseil ... and `/usr/lib64/qt6`; rv still starts and plays (local capture).
-* Wayland: H.264 mp4 (`-play`), jpg sequence, a QWebEngineView created from Python (renders, `loadFinished ok=True`, bundled QtWebEngineProcess
-  children), and the xcb fallback on Xvfb (no Wayland).
+  NSS, xkbcommon, xcb-util, webp, abseil ... and `/usr/lib64/qt6`; rv still starts and plays (`evidence/hidden-system-libs`).
+* Wayland: `evidence/wayland-mp4` (H.264 mp4, `-play`), `evidence/wayland-jpgseq` (jpg sequence), `evidence/webengine` (a QWebEngineView
+  created from Python renders, `loadFinished ok=True`, bundled QtWebEngineProcess children), `evidence/xcb-fallback` (Xvfb, no Wayland).
   `libadwaita.so` is mapped from `plugins/Qt/wayland-decoration-client/` inside the package.
 
 ## Caveats
@@ -161,9 +189,3 @@ Run on the rpm built here, extracted privately (`rpm2cpio | cpio`; also `rpm --r
 * The build configuration (BUILD_NOTES.md) enables the AAC, HEVC, ProRes, DNxHD, AC-3/E-AC-3, MPEG-2, QuickTime RLE and DV decoders that
   OpenRV's defaults disable for patent reasons. Check the patent/licence situation of those codecs in your jurisdiction before redistributing.
 * The licence expression in the spec summarises the main components; it is not a legal audit.
-
-## Note for this repository
-
-The built `.rpm` is deliberately **not** published anywhere: it bundles a Qt/QtWebEngine snapshot and FFmpeg decoders
-(AAC, HEVC, ...) whose patent/licensing situation depends on the jurisdiction. Build it locally with `build_rpm.sh`.
-`work/` and `out/` (git-ignored) are created next to this file.

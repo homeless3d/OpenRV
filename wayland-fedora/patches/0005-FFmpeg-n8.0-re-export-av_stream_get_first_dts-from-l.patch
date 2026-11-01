@@ -1,7 +1,7 @@
 From 229095051b0d8c3ddeacb7a64cc326f0295fb09e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Thu, 29 Oct 2026 18:56:37 +0100
-Subject: [PATCH 5/7] FFmpeg n8.0: re-export av_stream_get_first_dts from
+Subject: [PATCH 05/12] FFmpeg n8.0: re-export av_stream_get_first_dts from
  libavformat
 
 The system libQt6WebEngineCore imports av_stream_get_first_dts, which FFmpeg 8.0

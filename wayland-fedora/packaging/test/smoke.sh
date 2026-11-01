@@ -6,7 +6,7 @@
 ROOT=$1; OUT=$2; SECS=$3; shift 3
 WL=${WL-wl-pk}; mkdir -p "$OUT"
 LOG=$OUT/run.log; : > "$LOG"
-env -i HOME="$HOME" XDG_RUNTIME_DIR="${XRD:-/run/user/$(id -u)}" ${WL:+WAYLAND_DISPLAY=$WL} ${DX:+DISPLAY=$DX} PATH=/usr/bin:/bin \
+env -i HOME="$HOME" XDG_RUNTIME_DIR="${XRD:-/run/user/1001}" ${WL:+WAYLAND_DISPLAY=$WL} ${DX:+DISPLAY=$DX} PATH=/usr/bin:/bin \
     ${EXTRA_ENV} "$ROOT/bin/rv" "$@" > "$LOG" 2>&1 &
 W=$!
 P=
@@ -21,7 +21,7 @@ if [ -n "$P" ] && [ -d /proc/$P ]; then
     if [ "${SHOT:-1}" = 1 ] && [ -z "$WL" ] && [ -n "$DX" ]; then      # X11 session: grab the X display
         DISPLAY=$DX import -window root "$OUT/shot.png" 2>/dev/null
     elif [ "${SHOT:-1}" = 1 ]; then
-        ( cd "$OUT" && rm -f wayland-screenshot*.png && WAYLAND_DISPLAY=$WL XDG_RUNTIME_DIR=/run/user/$(id -u) timeout 20 weston-screenshooter >/dev/null 2>&1
+        ( cd "$OUT" && rm -f wayland-screenshot*.png && WAYLAND_DISPLAY=$WL XDG_RUNTIME_DIR=/run/user/1001 timeout 20 weston-screenshooter >/dev/null 2>&1
           f=$(ls -t wayland-screenshot*.png 2>/dev/null | head -1); [ -n "$f" ] && magick "$f" -flip "$OUT/shot.png" && rm -f "$f" )
     fi
     kill $P 2>/dev/null; sleep 2; kill -9 $P 2>/dev/null

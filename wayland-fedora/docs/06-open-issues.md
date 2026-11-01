@@ -36,10 +36,6 @@ An honest list. "Unverified" means nobody checked, not that it is broken.
   them crashes rv (an upstream Mu issue). They still load from source.
 * **VP9 is unavailable.** OpenRV always passes `--disable-parser=vp9`, so the decoder is not built even with `vp9` in
   `RV_FFMPEG_NON_FREE_DECODERS_TO_ENABLE`. Not pursued.
-* **The `patches/` directory is behind the branch.** Patches 0001-0007 and `source_patches.diff` do not include the icon
-  and startup commits (`b3088f4`, `43cb7f1`, `0495a0f`, `bd35652`).
-* **The committed `packaging/` is behind the workspace copy** (step 7b, crash-dump default, SVG icons); see
-  [04-packaging-rpm.md](04-packaging-rpm.md).
 * **Size grip guard is Wayland-only.** Patch 0007 removes the 17x17 size grip only on Wayland. The same overlap exists
   on X11 (and in the original Qt 5 build); X11 was left unchanged on purpose to keep behaviour identical to upstream
   there. It could be fixed for X11 too (for example by keeping the grip but leaving room for it in the layout margins)
@@ -49,6 +45,21 @@ An honest list. "Unverified" means nobody checked, not that it is broken.
 * **Who else connects to the QMenu `destroyed()` signal** (the other half of the Qt 6.11 warning, item 6) was not
   identified; the warning is gone because RV no longer does a wildcard disconnect.
 * **Harmless startup messages** about Vulkan and GBM remain (Chromium falling back to Vulkan / software rendering).
+
+* **`maya_tools` and `rvnuke_mode` `.muc` segfault when loaded in a new process** (they compile fine), and compiling
+  `external_ioprocess` segfaults in `Archive::Writer::freeze`. All three are excluded from the precompile
+  (`MUC_EXCLUDE`) and work from source; the cause of the first two was **not found**.
+* **Mu has no staleness check** for `.muc` (`Module::load` never compares mtime, size or hash): a stale `.muc` beats an
+  edited `.mu`. Anyone patching Mu files inside an installed tree must delete the matching `.muc`.
+* **Step 7b mode 4** (use the current session's display) was not run on a real session; modes 1-3 (xvfb-run, private
+  Xvfb, private weston) were tested with full builds.
+* **Startup with media loaded** was never measured; all startup numbers are for `rv` started without arguments.
+* **Startup items left**: `multiprocessing` imported via `PyInterface.cpp` (50-95 ms, C++ rebuild), `from PySide6 import *`
+  in `rv.qtutils` (~100 ms, would change a public API); lazy Mu module loading, an icon-decoding pool, a fontconfig cache
+  and a split of the package scan were not evaluated.
+* **The gain of the `.pyc` fix and of the lazy imports** were not separated in the measurements.
+* Items reported by the maintainer from a real GNOME session (not reproduced in the test beds) are listed above as
+  reported; they have not been independently verified.
 
 ## User-side, not part of the repository
 
