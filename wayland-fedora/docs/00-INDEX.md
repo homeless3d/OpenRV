@@ -41,7 +41,7 @@ compilarlo uno mismo. Los detalles estan en los documentos de abajo (en ingles);
 | 1 | [01-journey.md](01-journey.md) | What was tried, in order, and why each decision or pivot was made |
 | 2 | [02-technical-discoveries.md](02-technical-discoveries.md) | Every bug and finding: symptom, root cause, fix, commit, file |
 | 3 | [03-startup-performance.md](03-startup-performance.md) | How startup was measured and shortened; numbers; rounds 1 and 2 |
-| 4 | [04-packaging-rpm.md](04-packaging-rpm.md) | How the self-contained rpm is built and what it relies on |
+| 4 | [04-packaging-rpm.md](04-packaging-rpm.md) | How the two rpms are built (bundled `openrv`, system-Qt `openrv-system`) and what they rely on |
 | 5 | [05-testing-and-testbeds.md](05-testing-and-testbeds.md) | How things were verified without touching a real desktop; what was and was not verified |
 | 6 | [06-open-issues.md](06-open-issues.md) | Honest backlog, caveats, licence and clean-room note |
 

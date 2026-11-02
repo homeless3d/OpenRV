@@ -1,4 +1,8 @@
-# Packaging: the self-contained rpm
+# Packaging: two rpms, bundled and system
+
+Every build produces **two** rpms (`packaging/build_all.sh`): `openrv` (this page's main subject: self-contained, "bundled") and
+`openrv-system` (only OpenRV's own files, Qt/QtWebEngine/GPU stack from Fedora via dnf). They conflict with each other and with
+Fedora's `rv`. See [Variant: openrv-system](#variant-openrv-system) at the end of this page.
 
 The rpm turns the staged build (`build/stage/app`) into a package that carries its own Qt 6.11.2, QtWebEngine, ICU,
 NSS, FFmpeg, Python and ~135 libraries copied from the build host, so a later Fedora Qt update cannot break it. It
@@ -165,3 +169,23 @@ First version 347 MB rpm (zstd 10) / 1222 MB installed. After slimming: 215 MB (
 items installed: `libQt6WebEngineCore` 205 MB, Python 3.13 stdlib + site-packages 159 MB, `plugins/Mu` 33 MB,
 `libicudata` 31 MB, numpy.libs (OpenBLAS) 26 MB, numpy 25 MB, `rv.bin` 21 MB, `libavcodec` 17 MB. No LTO or
 `-march` tuning was done (hours of rebuild for a few percent, and portability loss).
+
+## Variant: `openrv-system`
+
+`VARIANT=system ./packaging/build_rpm.sh` (or `./packaging/build_all.sh`, which builds `bundled` then `system` and fails if either fails) builds
+`openrv-system-<ver>-<rel>.x86_64.rpm`: **81 MB rpm / 404 MB installed** (bundled: 215 MB / 735 MB), root `/opt/openrv-system`, work dir `packaging/work-system/`.
+It reuses the same script and spec (`rv_variant` macro); `Conflicts: openrv` / `openrv-system` / `rv`.
+
+* Same steps except: no Qt plugin/WebEngine copy (2), no host-library closure (4), RUNPATH `$ORIGIN`-only (5), step 5b (below), verification 7 =
+  RUNPATH check + `ldd` with empty `LD_LIBRARY_PATH` + every system `libQt6*` owned by a `qt6-*` package. 7b/7c unchanged. Own launcher
+  (`launcher/openrv-system-wrapper.sh`): no Qt isolation, still `RV_CRASH_DUMPS_ENABLED=0`, `QT_WAYLAND_DECORATION=adwaita`, platform selection.
+* Requires: rpm AutoReq (incl. `libQt6*.so.6(Qt_6.11_PRIVATE_API)`), plus `qt6-* >= 6.11.2, < 6.12` for every Qt package involved (`qtbase`, `qtbase-gui`,
+  `qtwayland`, `qtwayland-adwaita-decoration`, `qtwebengine`, `qtsvg`, `qtdeclarative`, `qtmultimedia`, `qtpositioning`, `qttools`, `qtwebchannel`) and the dlopen()ed
+  libglvnd/mesa-libGLU/vulkan-loader/libxkbcommon-x11/xcb-util-cursor/alsa-lib. The adwaita decoration plugin exists as a Fedora package, so no plugin is shipped.
+* **Embedded qt.conf**: `rv.bin` carries a Qt resource `qt.conf` (`Prefix = ..`, `Plugins = plugins/Qt`) that wins over any file, so Qt would search inside the OpenRV tree and abort
+  ("no Qt platform plugin"). The package contains symlinks into the system Qt instead (`plugins/Qt`, `libexec`, `translations`, `resources/*.pak`, and `PySide6/Qt/*`). A source-level fix (not embedding that file) would need an OpenRV rebuild.
+* **FFmpeg / WebEngine clash**: system `libQt6WebEngineCore` and RV's FFmpeg n8.0 use the same sonames (`libavcodec.so.62`, `libavformat.so.62`, `libavutil.so.60`); a soname is loaded once per process. Without intervention the rv process ended up with the *system* FFmpeg
+  (mixed with RV's libswscale/libswresample), which on stock Fedora (`ffmpeg-free`) has no H.264/HEVC/AAC. Step 5b makes RV's FFmpeg the first `DT_NEEDED` of `rv.bin`, so the process uses RV's copy (also for in-process WebEngine; this is what the `av_stream_get_first_dts` re-export in RV's FFmpeg is for) while the `QtWebEngineProcess` children use the system one.
+  Checked via `/proc/<pid>/maps`. Fragile if Fedora's WebEngine starts needing FFmpeg symbols newer than n8.0.
+* Tested unpacked (no install): all Requires resolve on the build host, no `not found`, Wayland first window with mp4 and jpg sequence, WebEngine view renders, `.muc` used, warm startup ~1.07 s (bundled ~1.06 s).
+  Not tested: real `dnf` transaction, other Fedora releases/GPUs, stock Fedora without RPM Fusion.

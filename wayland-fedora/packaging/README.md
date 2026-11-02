@@ -1,4 +1,55 @@
-# OpenRV (Qt 6.11.2 / Wayland) as a self-contained rpm
+# OpenRV (Qt 6.11.2 / Wayland): two rpms, "bundled" and "system"
+
+Every iteration builds **both** rpms with one command (no sudo, nothing installed):
+
+    ./packaging/build_all.sh                  # -> packaging/out/openrv-<ver>-<rel>.x86_64.rpm  and  openrv-system-<ver>-<rel>.x86_64.rpm
+    ./packaging/build_rpm.sh                  # only the bundled one (VARIANT=bundled is the default)
+    VARIANT=system ./packaging/build_rpm.sh   # only the system one
+
+| | **bundled** (`openrv`) | **system** (`openrv-system`) |
+|---|---|---|
+| idea | self-contained: Qt, QtWebEngine/Chromium, ICU, NSS ... (135 host libs) copied into the package ("static" in the maintainer's words; it still uses the host's glibc, GPU and Wayland stack) | ships only what OpenRV built (RV libs, FFmpeg, OIIO, OCIO, OpenEXR, Python+PySide6, plugins, .muc/.pyc); Qt, QtWebEngine, Wayland/xcb plugins, adwaita decorations, GPU, fonts, libstdc++ come from Fedora through dnf |
+| install root | `/opt/openrv` | `/opt/openrv-system` |
+| size (rpm / installed) | 215 MB / 735 MB | 81 MB / 404 MB (rpm SIZE tag 400 MB) |
+| survives a Fedora Qt upgrade | yes (frozen snapshot, no Fedora security fixes for Qt/Chromium) | no: `Requires: qt6-* >= 6.11.2, < 6.12`; dnf refuses/holds back the Qt upgrade to 6.12 until OpenRV (and PySide6) are rebuilt against it |
+| security fixes of Qt/Chromium | only by rebuilding | automatic with Fedora updates (within 6.11.x) |
+| startup (warm, first buffer, n=5) | ~1.06 s | ~1.07 s |
+
+Choose **bundled** to have something that keeps working across Fedora upgrades; choose **system** for a small package that
+follows Fedora's Qt/Chromium security updates and you accept rebuilding when Fedora moves to Qt 6.12.
+The two are mutually exclusive: both `Conflicts:` the other (same `/usr/bin/{rv,openrv,rvio,rvls,rvpkg,rvpush}` and desktop file)
+and both `Conflicts: rv` (Fedora's kernel-tools).
+
+    sudo dnf install ./packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm          # bundled
+    sudo dnf install ./packaging/out/openrv-system-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm   # system
+    # switching: sudo dnf swap openrv openrv-system   (or dnf remove one, then install the other)
+
+## The system variant in detail
+
+* **Build** (`VARIANT=system`, work dir `packaging/work-system/`): same steps as the bundled one except: no Qt plugin/WebEngine copy (step 2),
+  no host-library closure (4), `strip` only of RV's own ELF, RUNPATH `$ORIGIN`-relative only (5), a different verification (7: every RUNPATH entry
+  is `$ORIGIN`-relative inside the tree, `ldd` with an empty `LD_LIBRARY_PATH` finds everything, every system `libQt6*` belongs to a `qt6-*` package).
+  7b (Mu precompile, runs rv against the system Qt) and 7c (hash-checked pyc) are unchanged. `system-qt-packages.txt` lists the Qt packages that are always required.
+* **Requires**: rpm's automatic ELF dependencies (sonames and symbol versions, e.g. `libQt6Core.so.6(Qt_6.11_PRIVATE_API)`, glibc, libstdc++, libGL, libvulkan, libicu*, libffi ...;
+  RV-owned libs are filtered by `requires-exclude.regex`, `AutoProv: no`) plus `qt6-qtbase, qt6-qtbase-gui, qt6-qtwayland, qt6-qtwayland-adwaita-decoration, qt6-qtwebengine, qt6-qtsvg,
+  qt6-qtdeclarative, qt6-qtmultimedia, qt6-qtpositioning, qt6-qttools, qt6-qtwebchannel` each `>= 6.11.2, < 6.12` (the generated list follows what the tree links), and for dlopen()ed things:
+  `libglvnd-{glx,egl,opengl}, mesa-libGLU, vulkan-loader, libxkbcommon-x11, xcb-util-cursor, alsa-lib, fontconfig, xkeyboard-config, shared-mime-info` (Recommends: pipewire-pulseaudio, adwaita-sans-fonts, xdg-desktop-portal, mesa-dri-drivers).
+* **Qt plugins**: nothing is shipped. The platform plugins (wayland, xcb), shell/graphics integrations, imageformats, platform themes, tls come from `qt6-qtbase-gui`, `qt6-qtwayland`, `qt6-qtsvg`, `qt6-qtbase`;
+  the adwaita decoration (`libadwaita.so`) is in Fedora's own `qt6-qtwayland-adwaita-decoration`, so nothing had to be built. The launcher does **not** isolate Qt (no `unset QT_*`), only `PYTHONHOME BUILD_ROOT LD_PRELOAD`.
+* **rv.bin's embedded qt.conf**: `rv.bin` embeds a Qt resource `qt.conf` (`Prefix = ..`, `Plugins = plugins/Qt`) that Qt prefers over any file, so without help Qt looks for its plugins/libexec/resources/translations inside the OpenRV tree and aborts with
+  "no Qt platform plugin". The system rpm therefore contains **symlinks into the system Qt**: `plugins/Qt -> /usr/lib64/qt6/plugins`, `libexec -> /usr/lib64/qt6/libexec` (QtWebEngineProcess), `translations -> /usr/share/qt6/translations`,
+  `resources/*.pak, v8_context_snapshot.bin -> /usr/share/qt6/resources/` and the same four under `PySide6/Qt/`. Nothing is copied. (Cleaner fix, needs an OpenRV rebuild: do not embed that qt.conf when building for system Qt.)
+  There is no `qt.conf` file.
+* **QtWebEngine / FFmpeg**: Chromium is the system's. Finding: `libQt6WebEngineCore.so.6` (system) and RV's FFmpeg n8.0 share the sonames `libavcodec.so.62 / libavformat.so.62 / libavutil.so.60`, and a soname is loaded once per process.
+  `rv.bin` links WebEngine directly but only dlopen()s RV's FFmpeg (the `mio_ffmpeg` plugin) later, so with a plain build the process mapped the **system** `libav*` (on this host RPM Fusion's 8.1.3; on stock Fedora `ffmpeg-free`, which lacks H.264/HEVC/AAC) and mixed it with RV's own `libswscale/libswresample`.
+  Step 5b therefore adds RV's `libavformat/libavcodec/libavutil/libswresample/libswscale` as the first DT_NEEDED entries of `rv.bin`: verified in `/proc/<pid>/maps` that the rv process then maps only the tree's FFmpeg (WebEngine in the same process uses it, which is what the `av_stream_get_first_dts` re-export patch of RV's FFmpeg is for;
+  a QWebEngineView renders, `loadFinished ok=True`), while the separate `QtWebEngineProcess` children (renderer/GPU) keep using the system FFmpeg. This works with Fedora's WebEngine 6.11.2 against RV's FFmpeg n8.0 here; a future qt6-qtwebengine that needs newer FFmpeg symbols than n8.0 would break this (symptom: rv fails to start or the web view crashes): rebuild against that FFmpeg.
+  Only `rv.bin` is patched; `rvio` etc. do not load WebEngine.
+* **Verified without installing** (extracted with `rpm2cpio`, read-only, clean environment): `rpm -qpR` -> all 202 capabilities resolve against the packages installed here; `ldd` over the 324 ELF files with an empty `LD_LIBRARY_PATH`: nothing "not found", no RUNPATH outside `$ORIGIN`;
+  `rv -version`; real Wayland session: first window (`wl_surface.attach` + `set_app_id com.aswf.rv`) with an mp4 and a jpg sequence, no Python/Mu errors, no "compiled" lines (the 48 `.muc` are used); `libadwaita.so` and `libqwayland.so` mapped from `/usr/lib64/qt6/plugins`; `rvio` renders frames of both media (under Xvfb).
+* **Not verified**: a real `dnf install` transaction, other Fedora releases, stock Fedora (without RPM Fusion) codecs, other GPUs.
+
+## The bundled variant (`openrv`), reference
 
 `packaging/` turns the staged OpenRV build (`build/stage/app`, native Wayland, Qt 6.11.2) into
 `packaging/out/openrv-4.0.0-0.wayland.qt6.1.fc44.x86_64.rpm`.

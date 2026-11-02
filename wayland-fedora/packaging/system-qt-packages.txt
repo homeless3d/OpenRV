@@ -1,0 +1,9 @@
+# openrv-system: Fedora packages that are ALWAYS required (pinned to the Qt minor series OpenRV/PySide6 were built
+# against: >= the host's Qt, < next minor), even if no ELF file of the tree links them directly.
+# The build adds every other qt6-* package that owns a libQt6*.so.6 the tree links (rpm -qf), see build_rpm.sh step 7.
+qt6-qtbase                           # Core/Gui/Widgets..., tls (openssl) plugin
+qt6-qtbase-gui                       # platforms (wayland, xcb, offscreen), platformthemes (xdg portal), input contexts, imageformats, xcb GL integrations
+qt6-qtwayland                        # wayland shell/graphics integrations (client-side Wayland plugin set)
+qt6-qtwayland-adwaita-decoration     # QT_WAYLAND_DECORATION=adwaita (GNOME-style title bar)
+qt6-qtwebengine                      # libQt6WebEngineCore/Widgets + QtWebEngineProcess + resources/locales (Chromium)
+qt6-qtsvg                            # svg image format + icon engine plugins

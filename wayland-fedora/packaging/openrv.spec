@@ -1,5 +1,8 @@
-# OpenRV 4.0.0 (ASWF) built against Qt 6.11.2 for native Wayland, self-contained under /opt/openrv.
-# Built by packaging/build_rpm.sh, which prepares the payload tree (%{stage_root}); this spec only packs it.
+# OpenRV 4.0.0 (ASWF) built against Qt 6.11.2 for native Wayland. Two variants from this one spec (rv_variant):
+#   bundled (default) -> openrv         self-contained under /opt/openrv
+#   system            -> openrv-system  only OpenRV's own files under /opt/openrv-system, Qt & co. from Fedora (dnf)
+# Built by packaging/build_rpm.sh, which prepares the payload tree (%%{stage_root}); this spec only packs it.
+%{!?rv_variant:%global rv_variant bundled}
 
 %global debug_package %{nil}
 %global _build_id_links none
@@ -15,15 +18,31 @@ AutoProv:       no
 # everything the package carries itself, and interpreter paths of bundled scripts, are filtered out.
 %global __requires_exclude %(cat %{requires_filter})
 
+%if "%{rv_variant}" == "system"
+Name:           openrv-system
+%global         instroot /opt/openrv-system
+%else
 Name:           openrv
+%global         instroot /opt/openrv
+%endif
 Version:        %{rv_version}
 Release:        %{rv_release}%{?dist}
+%if "%{rv_variant}" == "system"
+Summary:        OpenRV media player and review tool (Qt 6 / Wayland, uses the system Qt)
+%else
 Summary:        OpenRV media player and review tool (self-contained Qt 6 / Wayland build)
+%endif
 License:        Apache-2.0 AND LGPL-3.0-only AND LGPL-2.1-or-later AND BSD-3-Clause AND MIT AND Python-2.0.1 AND Zlib AND BSL-1.0 AND MPL-2.0
 URL:            https://github.com/AcademySoftwareFoundation/OpenRV
 ExclusiveArch:  x86_64
 # Fedora's kernel-tools subpackage 'rv' (runtime-verification tool) owns /usr/bin/rv too; /usr/bin/openrv never conflicts
 Conflicts:      rv
+# the two variants install the same /usr/bin names and desktop file: mutually exclusive
+%if "%{rv_variant}" == "system"
+Conflicts:      openrv
+%else
+Conflicts:      openrv-system
+%endif
 # Needed at run time, not detectable from the ELF files (data / helper packages of the host)
 Requires:       fontconfig
 Requires:       xkeyboard-config
@@ -31,17 +50,40 @@ Requires:       shared-mime-info
 Recommends:     adwaita-sans-fonts
 Recommends:     xdg-desktop-portal
 Recommends:     mesa-dri-drivers
+%if "%{rv_variant}" == "system"
+# Qt 6 comes from Fedora: RV's binaries and PySide6 are ABI-tied to the Qt minor series they were built against
+# (build_rpm.sh generates "pkg >= 6.11.2, pkg < 6.12" for every qt6-* package involved).
+Requires:       %{qt_requires}
+# dlopen()ed by Python/PyOpenGL/Qt (no NEEDED entry, invisible to the automatic dependency generator)
+Requires:       libglvnd-glx
+Requires:       libglvnd-egl
+Requires:       libglvnd-opengl
+Requires:       mesa-libGLU
+Requires:       vulkan-loader
+Requires:       libxkbcommon-x11
+Requires:       xcb-util-cursor
+Requires:       alsa-lib
+Recommends:     pipewire-pulseaudio
+%endif
 
 %description
 OpenRV is the open source release of Autodesk's RV: a media player and review tool for image sequences
 and movies (EXR, DPX, TIFF, JPEG, H.264/HEVC/ProRes QuickTime, ...), with OpenColorIO, annotations,
 Python (PySide6) and Mu scripting.
 
+%if "%{rv_variant}" == "system"
+This is the "system" variant: it ships only what OpenRV itself built (RV libraries, FFmpeg, OIIO, OCIO, OpenEXR,
+Python 3.13 + PySide6, Mu/Python plugins) in /opt/openrv-system, and uses Fedora's own Qt 6.11.x (Qt, QtWebEngine,
+Wayland/xcb plugins, adwaita decorations), GPU, audio, font and C/C++ runtime libraries through normal dnf
+dependencies. It needs the Qt 6.11 series of Fedora and must be rebuilt when Fedora moves to another Qt minor.
+It conflicts with the self-contained "openrv" package. See /usr/share/doc/openrv-system/README.packaging.md.
+%else
 This build links Qt 6.11.2 and bundles it: Qt, QtWebEngine, ICU, NSS, FFmpeg, Python 3.13, PySide6 and
 the other libraries live in /opt/openrv and are found through $ORIGIN-relative RUNPATH and qt.conf, so a
 later Fedora release that changes its own Qt does not affect it. Only the C library, the C++ runtime, the
 GPU/Wayland/X11/D-Bus/audio/font stack of the host are used from the system.
 See /usr/share/doc/openrv/README.packaging.md.
+%endif
 
 %prep
 %build
@@ -64,9 +106,9 @@ exit 0
 
 %files
 %defattr(-,root,root,-)
-%license /usr/share/licenses/openrv
-%doc /usr/share/doc/openrv
-/opt/openrv
+%license /usr/share/licenses/%{name}
+%doc /usr/share/doc/%{name}
+%{instroot}
 /usr/bin/rv
 /usr/bin/openrv
 /usr/bin/rvio
@@ -78,5 +120,7 @@ exit 0
 /usr/share/icons/hicolor/scalable/apps/openrv.svg
 
 %changelog
+* Sun Nov 01 2026 Claude <noreply@anthropic.com> - 4.0.0-0.wayland.qt6.1
+- Spec shared by two variants: openrv (bundled) and openrv-system (system Qt); they conflict with each other
 * Thu Oct 29 2026 Claude <noreply@anthropic.com> - 4.0.0-0.wayland.qt6.1
 - First self-contained package: OpenRV main (cade394 + wayland-qt6 patches) with bundled Qt 6.11.2

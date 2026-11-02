@@ -69,6 +69,7 @@ An honest list. "Unverified" means nobody checked, not that it is broken.
 
 ## Maintenance risks
 
+* **`openrv-system` is tied to Qt 6.11.x**: it `Requires` `qt6-* >= 6.11.2, < 6.12` and must be rebuilt when Fedora moves to Qt 6.12; it also depends on the first-loaded FFmpeg trick (step 5b of `build_rpm.sh`) and on `rv.bin`'s embedded `qt.conf` being worked around with symlinks into the system Qt. A real `dnf` transaction was not run.
 * **Qt and Chromium in the rpm are frozen** at the version copied at build time; security fixes need a rebuild.
 * **Upstream drift**: expected conflict points are `cmake/defaults/CY2026.cmake`, `cmake/dependencies/python3.cmake`,
   `GLWindow.cpp`, `RvDocument.cpp`, `make_pyside6.py`. `tools/update-from-upstream.sh` replays the commits and reports

@@ -1,7 +1,10 @@
 #!/bin/bash
-# build_rpm.sh -- build the self-contained OpenRV (Qt 6 / Wayland) rpm as a normal user.
-#   ./packaging/build_rpm.sh            (no sudo, nothing is installed, nothing is downloaded)
-# Output: packaging/out/openrv-<ver>-<rel>.x86_64.rpm   (+ packaging/work/ with the intermediate tree)
+# build_rpm.sh -- build an OpenRV (Qt 6 / Wayland) rpm as a normal user. Two variants share this script:
+#   ./packaging/build_rpm.sh                    VARIANT=bundled (default): self-contained, Qt/Chromium/host libs in /opt/openrv
+#   VARIANT=system ./packaging/build_rpm.sh     "openrv-system": only what OpenRV built, Qt & co. from the system (dnf deps)
+#   ./packaging/build_all.sh                    both, one after the other
+# (no sudo, nothing is installed, nothing is downloaded)
+# Output: packaging/out/<name>-<ver>-<rel>.x86_64.rpm   (+ packaging/work[-system]/ with the intermediate tree)
 #
 # Needs: rpmbuild, patchelf, magick (ImageMagick), python3, rsync, zstd and the host's Qt 6 / Chromium
 # libraries (the Fedora Qt that the OpenRV build in build/stage was linked against).
@@ -11,9 +14,14 @@ PK=$(cd "$(dirname "$0")" && pwd)
 OQ=$(dirname "$PK")
 STAGE=${STAGE:-$OQ/build/stage/app}          # the staged application tree (cmake --install result)
 SRC=$OQ/src
-WORK=$PK/work
+VARIANT=${VARIANT:-bundled}
+case $VARIANT in
+    bundled) PKGNAME=openrv;        INST=opt/openrv;        WORK=$PK/work ;;
+    system)  PKGNAME=openrv-system; INST=opt/openrv-system; WORK=$PK/work-system ;;
+    *) echo "VARIANT must be bundled or system (got '$VARIANT')" >&2; exit 1 ;;
+esac
 ROOT=$WORK/root                              # becomes the rpm payload
-APP=$ROOT/opt/openrv
+APP=$ROOT/$INST
 QTPLUG=/usr/lib64/qt6/plugins                # host Qt plugins to copy
 QTSHARE=/usr/share/qt6
 VERSION=${VERSION:-4.0.0}
@@ -24,7 +32,7 @@ export PATH=$HOME/.local/bin:$PATH
 for t in rpmbuild "$PATCHELF" magick python3 rsync zstd; do command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 1; }; done
 [ -x "$STAGE/bin/rv.bin" ] || { echo "no staged app at $STAGE" >&2; exit 1; }
 QTVER=$(readlink -f /usr/lib64/libQt6Core.so.6 | sed 's/.*\.so\.//')
-echo "== OpenRV $VERSION-$RELEASE, host Qt $QTVER, stage $STAGE"
+echo "== OpenRV [$VARIANT] $PKGNAME $VERSION-$RELEASE, host Qt $QTVER, stage $STAGE"
 
 log() { echo; echo "== $*"; }
 export REPORT_DIR=$WORK
@@ -51,7 +59,7 @@ rsync -a \
 find "$APP" -xtype l -delete
 # the build tree's absolute path must not leak into scripts (python shebang of pip entry points etc.)
 grep -rIl --exclude-dir=__pycache__ "$OQ/build/RV_DEPS_PYTHON3/install/bin/python3" "$APP/lib" 2>/dev/null \
-    | while read -r f; do sed -i "1s|^#!.*python3[.0-9]*$|#!/opt/openrv/bin/python3|" "$f"; done || true
+    | while read -r f; do sed -i "1s|^#!.*python3[.0-9]*$|#!/$INST/bin/python3|" "$f"; done || true
 chmod -R u+rwX,go+rX "$APP"
 
 # ---------------------------------------------------------------- 1b. slimming: nothing for debugging, testing or building
@@ -75,6 +83,7 @@ find "$APP"/resources/locales -maxdepth 0 -type d -exec rmdir {} + 2>/dev/null |
 find "$APP" -name '__pycache__' -type d -empty -delete 2>/dev/null || true
 
 # ---------------------------------------------------------------- 2. Qt plugin tree, WebEngine, translations from the host
+if [ "$VARIANT" = bundled ]; then
 log "2. Qt $QTVER plugin tree, QtWebEngine process/resources, translations (from the host)"
 P=$APP/plugins/Qt; mkdir -p "$P"
 cp_plugins() {      # cp_plugins <dir> [<glob>...]
@@ -121,23 +130,49 @@ PS=$APP/lib/python3.13/site-packages/PySide6
 mkdir -p "$PS/Qt"
 ln -s ../../../.. "$PS/Qt/lib"; ln -s ../../../../../libexec "$PS/Qt/libexec" 2>/dev/null || true
 ln -s ../../../../../resources "$PS/Qt/resources"; ln -s ../../../../../translations "$PS/Qt/translations"
+else
+log "2. (system variant) no Qt plugins/QtWebEngine copied: links into the system Qt tree (Fedora layout)"
+# rv.bin embeds a qt.conf resource (src/bin/apps/rv/qt/etc/qt.conf: "Prefix = .." and "Plugins = plugins/Qt"), which Qt
+# prefers over any qt.conf file, so for rv.bin QLibraryInfo is rooted at the OpenRV tree: Plugins=$RV/plugins/Qt,
+# LibraryExecutables=$RV/libexec, Data=$RV (resources/), Translations=$RV/translations. Without these paths Qt aborts
+# with "no Qt platform plugin". They are therefore symlinks to the SYSTEM Qt (nothing of Qt is copied, no qt.conf file).
+SYSQT=${QTPLUG%/plugins}                                 # /usr/lib64/qt6
+rm -f "$APP"/bin/qt.conf "$APP"/libexec/qt.conf
+rm -rf "$APP/plugins/Qt" "$APP/libexec" "$APP/translations"
+[ -d "$QTPLUG/platforms" ] && [ -x "$SYSQT/libexec/QtWebEngineProcess" ] && [ -d "$QTSHARE/resources" ] || { echo "system Qt not found under $SYSQT / $QTSHARE" >&2; exit 1; }
+ln -s "$QTPLUG" "$APP/plugins/Qt"
+ln -s "$SYSQT/libexec" "$APP/libexec"
+ln -s "$QTSHARE/translations" "$APP/translations"
+mkdir -p "$APP/resources"
+for f in "$QTSHARE"/resources/*; do ln -sf "$f" "$APP/resources/"; done          # *.pak, v8_context_snapshot.bin (QtWebEngine)
+# PySide6 (python -c "import PySide6...", rvpkg/py-interp) looks for Qt below PySide6/Qt/ too
+PS=$APP/lib/python3.13/site-packages/PySide6; mkdir -p "$PS/Qt"
+ln -s "$QTPLUG" "$PS/Qt/plugins"; ln -s "$SYSQT/libexec" "$PS/Qt/libexec"
+ln -s "$QTSHARE/resources" "$PS/Qt/resources"; ln -s "$QTSHARE/translations" "$PS/Qt/translations"
+fi
 
 # ---------------------------------------------------------------- 3. RV wrappers
 log "3. launchers"
+WRAPPER=$PK/launcher/openrv-wrapper.sh
+[ "$VARIANT" = system ] && WRAPPER=$PK/launcher/openrv-system-wrapper.sh
 for b in "$APP"/bin/*.bin; do
     n=$(basename "$b" .bin)
-    install -m 755 "$PK/launcher/openrv-wrapper.sh" "$APP/bin/$n"
+    install -m 755 "$WRAPPER" "$APP/bin/$n"
 done
 # bin/python, python3, python3.13 are real executables in this stage (not wrappers) -> untouched
 rm -f "$APP"/bin/crashpad_handler_linux.sh.in
 chmod 755 "$APP"/bin/crashpad_handler_linux.sh 2>/dev/null || true
 
 # ---------------------------------------------------------------- 4. shared library closure
+if [ "$VARIANT" = bundled ]; then
 log "4. ldd closure (deny list: $PK/excludelist.txt)"
 python3 -I "$PK/closure.py" "$APP" "$PK/excludelist.txt" "$PK/dlopen-extras.txt" | tee "$WORK/closure.log"
+else
+log "4. (system variant) no host libraries are copied"
+fi
 
 # ---------------------------------------------------------------- 4b. strip
-log "4b. strip --strip-unneeded (keeps .dynsym, so dynamic linking and dlopen are unaffected)"
+log "4b. strip --strip-unneeded of the ELF files in the tree (keeps .dynsym, so dynamic linking and dlopen are unaffected)"
 python3 -I - "$APP" <<'PYEOF'
 import os, sys, subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -208,11 +243,27 @@ with ThreadPoolExecutor(8) as ex:
 print('RUNPATH set on %d ELF files (%d skipped)' % (len(files) - fail, fail))
 PYEOF
 
+if [ "$VARIANT" = system ]; then
+# FFmpeg identity. The system's libQt6WebEngineCore NEEDs libavcodec/avformat/avutil.so.<N> -- the same sonames as RV's own
+# FFmpeg n8.0 in lib/. A soname is loaded once per process: whichever is mapped first wins. rv.bin links WebEngine directly
+# but loads RV's FFmpeg only later, through the mio_ffmpeg.so plugin (dlopen), so without this step the SYSTEM FFmpeg
+# (Fedora's ffmpeg-free, with its reduced codec set: no H.264/HEVC/AAC) ends up serving RV's movie reader and RV's
+# libswscale/libswresample mix with it. Adding RV's FFmpeg as the FIRST DT_NEEDED entries of rv.bin makes the tree's copy
+# win (RUNPATH $ORIGIN/../lib); WebEngine in the same process then uses it too, which is what the av_stream_get_first_dts
+# re-export patch in RV's FFmpeg is for. (QtWebEngineProcess, a separate process, keeps the system FFmpeg.)
+log "5b. (system variant) load RV's FFmpeg first in rv.bin"
+for l in avformat avcodec avutil swresample swscale; do
+    f=$(cd "$APP/lib" && ls lib$l.so.[0-9]* | head -1)
+    "$PATCHELF" --add-needed "$f" "$APP/bin/rv.bin"
+done
+readelf -d "$APP/bin/rv.bin" | grep -m5 NEEDED || true
+fi
+
 # ---------------------------------------------------------------- 6. desktop integration, /usr/bin
 log "6. desktop file, icons, /usr/bin links, licenses"
-mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/licenses/openrv" "$ROOT/usr/share/doc/openrv"
-for n in rv rvio rvpush rvls rvpkg; do ln -s /opt/openrv/bin/$n "$ROOT/usr/bin/$n"; done
-ln -s /opt/openrv/bin/rv "$ROOT/usr/bin/openrv"     # alias: Fedora's kernel-tools 'rv' package also owns /usr/bin/rv
+mkdir -p "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/usr/share/licenses/$PKGNAME" "$ROOT/usr/share/doc/$PKGNAME"
+for n in rv rvio rvpush rvls rvpkg; do ln -s /$INST/bin/$n "$ROOT/usr/bin/$n"; done
+ln -s /$INST/bin/rv "$ROOT/usr/bin/openrv"     # alias: Fedora's kernel-tools 'rv' package also owns /usr/bin/rv
 install -m 644 "$PK/com.aswf.rv.desktop" "$ROOT/usr/share/applications/com.aswf.rv.desktop"
 SVG=$SRC/src/bin/apps/rv/RV.svg
 H=$ROOT/usr/share/icons/hicolor
@@ -221,14 +272,60 @@ for n in 16 24 32 48 64 128 256 512; do
     magick -background none -density $((n * 96 / 400 + 1)) "$SVG" -resize ${n}x${n} -strip "PNG32:$H/${n}x${n}/apps/openrv.png"
 done
 mkdir -p "$H/scalable/apps"; install -m 644 "$SVG" "$H/scalable/apps/openrv.svg"
-cp "$SRC/LICENSE" "$ROOT/usr/share/licenses/openrv/LICENSE" 2>/dev/null || true
-cp "$SRC/Notice.txt" "$SRC/THIRD-PARTY.md" "$ROOT/usr/share/licenses/openrv/"
-cp "$PK/BUNDLED-QT-NOTE.txt" "$ROOT/usr/share/licenses/openrv/"
-cp "$PK/README.md" "$ROOT/usr/share/doc/openrv/README.packaging.md"
+cp "$SRC/LICENSE" "$ROOT/usr/share/licenses/$PKGNAME/LICENSE" 2>/dev/null || true
+cp "$SRC/Notice.txt" "$SRC/THIRD-PARTY.md" "$ROOT/usr/share/licenses/$PKGNAME/"
+[ "$VARIANT" = bundled ] && cp "$PK/BUNDLED-QT-NOTE.txt" "$ROOT/usr/share/licenses/$PKGNAME/"
+cp "$PK/README.md" "$ROOT/usr/share/doc/$PKGNAME/README.packaging.md"
 
 # ---------------------------------------------------------------- 7. verification of the tree, requires filter
+if [ "$VARIANT" = bundled ]; then
 log "7. verify: with EMPTY library path every dependency must be inside the tree or deny-listed"
 python3 -I "$PK/closure.py" "$APP" "$PK/excludelist.txt" "$PK/dlopen-extras.txt" --verify | tee "$WORK/verify.log"
+else
+log "7. verify (system variant): RUNPATHs only \$ORIGIN-relative inside the tree; with EMPTY library path ldd finds everything; Qt libs belong to pinned packages"
+python3 -I - "$APP" "$PK/system-qt-packages.txt" "$WORK/verify.log" <<'PYEOF'
+import os, sys, subprocess, collections
+app, pinned, logf = os.path.realpath(sys.argv[1]), sys.argv[2], sys.argv[3]
+env = {k: v for k, v in os.environ.items() if not k.startswith(('LD_', 'QT_', 'PYTHON'))}
+always = [l.split('#')[0].strip() for l in open(pinned)]; always = [x for x in always if x]
+def is_elf(p):
+    try:
+        with open(p, 'rb') as f: return f.read(4) == b'\x7fELF'
+    except OSError: return False
+files = [os.path.join(d, f) for d, _, fs in os.walk(app) for f in fs
+         if not os.path.islink(os.path.join(d, f)) and is_elf(os.path.join(d, f))]
+bad, sysqt, n = [], collections.defaultdict(set), 0
+for p in sorted(files):
+    rel = os.path.relpath(p, app)
+    rp = subprocess.run(['patchelf', '--print-rpath', p], capture_output=True, text=True).stdout.strip()
+    for e in filter(None, rp.split(':')):
+        d = os.path.normpath(os.path.join(os.path.dirname(p), e.replace('$ORIGIN', '.'))) if e.startswith('$ORIGIN') else None
+        if d is None or not (d + os.sep).startswith(app + os.sep):
+            bad.append('%s: RUNPATH entry outside the tree: %s' % (rel, e))
+    out = subprocess.run(['ldd', p], capture_output=True, text=True, env=env).stdout
+    for l in out.splitlines():
+        if 'not found' in l: bad.append('%s: %s' % (rel, l.strip()))
+        elif '=>' in l:
+            lib = l.split('=>')[1].split(' (')[0].strip()
+            if os.path.basename(lib).startswith('libQt6') and not lib.startswith(app + os.sep):
+                sysqt[os.path.basename(lib).split('.so')[0]].add(rel)
+    n += 1
+owners = collections.defaultdict(list)
+for lib in sorted(sysqt):
+    r = subprocess.run(['rpm', '-qf', '--qf', '%{NAME}\n', os.path.realpath('/usr/lib64/%s.so.6' % lib)], capture_output=True, text=True)
+    o = r.stdout.split()[0] if r.returncode == 0 and r.stdout.split() else '?'
+    owners[o].append(lib)
+    if not o.startswith('qt6-'): bad.append('%s (system %s.so.6) is owned by "%s", not a qt6-* package' % (lib, lib, o))
+with open(logf, 'w') as f:
+    for o in sorted(owners): f.write('%s: %s\n' % (o, ' '.join(owners[o])))
+    f.write('%d ELF files checked, %d problems\n' % (n, len(bad)))
+print(open(logf).read(), end='')
+with open(os.path.join(os.path.dirname(logf), 'qt-packages.txt'), 'w') as f:      # pinned Requires, consumed by step 8
+    f.write('\n'.join(sorted(set(always) | set(owners))) + '\n')
+if bad:
+    print('\n'.join(bad), file=sys.stderr); sys.exit(1)
+PYEOF
+fi
 
 # rpm must not Require what the package carries itself (and must not Provide it either: AutoProv is off).
 python3 -I - "$APP" "$WORK/requires-exclude.regex" <<'PYEOF'
@@ -366,7 +463,7 @@ MUC_EXPECT=$(printf '%s\n' $MUC_ALL | grep -vxF -f <(printf '%s\n' $MUC_EXCLUDE 
 muc_run() {        # muc_run LOGNAME [extra rv args]: fresh rv, eval loads all, polls the result file for the sentinel
     local name=$1; shift
     rm -f "$MUC_RES"
-    setsid env "${GENENV[@]}" HOME="$GENHOME" RV_HOME="$APP" \
+    setsid env -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH -u QT_QPA_PLATFORMTHEME -u PYTHONHOME -u LD_LIBRARY_PATH "${GENENV[@]}" HOME="$GENHOME" RV_HOME="$APP" \
         "${GENX[@]}" "$APP/bin/rv" -noPrefs "$@" -eval "$MUC_EV" > "$WORK/$name.log" 2>&1 &
     GENPID=$!
     for _ in $(seq "$MUC_TIMEOUT"); do
@@ -426,9 +523,18 @@ echo "    $(find "$APP" -name '*.pyc' | wc -l) .pyc written (compile errors, if 
 
 # ---------------------------------------------------------------- 8. rpmbuild
 log "8. rpmbuild"
+QT_REQUIRES=
+if [ "$VARIANT" = system ]; then       # "qt6-x >= 6.11.2, qt6-x < 6.12, ..." : the Qt minor series OpenRV and PySide6 were built against
+    QT_MIN=$QTVER; QT_MAX=${QTVER%%.*}.$(( $(echo "$QTVER" | cut -d. -f2) + 1 ))
+    QT_REQUIRES=$(while read -r q; do printf '%s >= %s, %s < %s, ' "$q" "$QT_MIN" "$q" "$QT_MAX"; done < "$WORK/qt-packages.txt")
+    QT_REQUIRES=${QT_REQUIRES%, }
+    echo "qt_requires: $QT_REQUIRES"
+fi
 mkdir -p "$WORK/rpmbuild"/{BUILD,RPMS,SRPMS,SOURCES,SPECS} "$PK/out"
-rm -f "$PK"/out/*.rpm
+rm -f "$PK/out/$PKGNAME-$VERSION-"*.rpm
 rpmbuild -bb "$PK/openrv.spec" \
+    --define "rv_variant $VARIANT" \
+    ${QT_REQUIRES:+--define "qt_requires $QT_REQUIRES"} \
     --define "_topdir $WORK/rpmbuild" \
     --define "_rpmdir $PK/out" \
     --define "stage_root $ROOT" \
@@ -436,4 +542,4 @@ rpmbuild -bb "$PK/openrv.spec" \
     --define "rv_version $VERSION" --define "rv_release $RELEASE" \
     --buildroot "$WORK/rpmbuild/BUILDROOT" 2>&1 | tail -40
 mv "$PK"/out/x86_64/*.rpm "$PK/out/" && rmdir "$PK/out/x86_64"
-ls -l "$PK"/out/*.rpm
+ls -l "$PK/out/$PKGNAME-$VERSION-"*.rpm
